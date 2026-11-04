@@ -398,9 +398,11 @@ The scenarios below are hypotheses to assess, not findings about Lyceum:
 | An attacker steals an employee account or laptop | Access to documents, code, or customer information | Is strong sign-in enforced? Is the laptop managed and encrypted? Can access be revoked? |
 | A visitor enters an unattended work area | Theft, overheard discussions, or access to equipment | How are visitors admitted, escorted, and kept away from sensitive work? |
 | A competitor or other motivated actor targets our research or leaders | Loss of intellectual property, coercion, or personal harm | What makes us a plausible target? Which exposure warrants additional protection? |
-| A compromised software component or build tool enters a release | Malicious software reaches customers or production | Who can change the release process? Can untrusted code obtain production credentials? |
+| A compromised software component, build tool, or model artifact enters a release or model serving | Malicious or altered software reaches customers or production | Do we verify sources and integrity before use? Who can change the release or model-approval process? Can untrusted code obtain production credentials? |
 | An employee, contractor, or automated process has excessive access | Accidental damage or deliberate misuse | Can one identity read, change, or delete more than its task requires? |
 | A service fails, data is deleted, or ransomware strikes | Extended interruption and permanent loss | Are recovery copies protected from the same failure, and have we restored them? |
+| A customer's credential or token is stolen and the service is abused | Fraudulent usage and unexpected cost; attack traffic from our infrastructure; harm to other customers | Can we detect anomalous usage from rate and cost signals without inspecting content? Who can throttle or suspend, and under what approval? |
+| Content retrieved by a hosted agent manipulates it into unintended actions | Unauthorized external actions or disclosure from connected systems | Where we host agent workloads, are their scopes least-privilege? Are consequential external actions recorded and authorized? |
 
 For each scenario, record likelihood, business impact, existing safeguards, gaps, and an accountable owner. Simple low, medium, and high ratings with a written explanation are sufficient initially. Mark unverified safeguards as **unknown**, rather than assuming they work or claiming they are absent. Record the risk that remains after protections are applied.
 

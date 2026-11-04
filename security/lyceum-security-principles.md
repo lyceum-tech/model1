@@ -28,6 +28,12 @@ The **attack surface** is the collection of places through which someone could r
 
 We should collect less information, retain it only as long as needed, remove unused access, and operate a small set of supported tools. Simplicity is a security advantage because a small team can understand and maintain a simpler environment.
 
+### Verify the integrity and provenance of what we run
+
+We must know what runs on our systems and be able to show where it came from. Dependencies, container images, build-and-release artifacts, and model weights are all inputs whose compromise can enter production through a trusted path. Establish sources of record, verify what we import before use, control who may introduce new components, and record provenance for the artifacts we release and serve. Frameworks such as SLSA describe graduated levels of supply-chain protection we can adopt proportionately. [SLSA: Supply-chain Levels for Software Artifacts](https://slsa.dev/)
+
+Model artifacts are controlled inputs even while we primarily serve open-weight models: fetch them from verified sources, check and scan them, and require independent approval before a model is served or changed. Open weights limit the confidentiality risk of the base models; they do not limit integrity risk, and customer-specific fine-tunes and adapters can be confidential long before any proprietary model exists. When we introduce proprietary or customer-specific models, a named owner must revisit the confidentiality position with a set date, because the protection required will change.
+
 ### Apply Zero Trust principles
 
 **Zero Trust** means that access is not automatically safe because it comes from our office, our network, or someone with a company email address. Each access decision should consider the identity involved, the requested action, and relevant conditions such as whether the device meets our security requirements. Access should be reassessed when those conditions change.
@@ -45,6 +51,12 @@ The level of effort should follow the risk. A public brochure and a customer-dat
 We need several independent safeguards, visibility into significant events, and a practiced recovery process. A stolen password should encounter another barrier; a compromised account should have limited reach; a destructive action should leave evidence and recoverable data.
 
 Security therefore includes prevention, detection, response, and recovery. A practice that only tries to prevent incidents is incomplete.
+
+### Define where our responsibility ends and the customer's begins
+
+As a business-to-business provider, our customers are responsible for how they use the service: the lawfulness of their processing, their data and its classification, their end users, and what their software and agents are delegated to do. Lyceum is responsible for the platform itself: isolation between customers, the security of credentials and access, the integrity of the models we serve, and the infrastructure beneath them. This boundary must be written down—in our agreements, our customer assurance material, and our threat models—rather than assumed. Neither side can delegate its own duties to the other, and an unstated assumption here is both unverifiable and unenforceable.
+
+Protecting the platform also means detecting and containing abuse of it: stolen customer credentials, fraudulent usage, attack traffic leaving our network, and usage that threatens availability or other customers. Detection should operate at the infrastructure level—rates, anomalies, and cost signals—and must not depend on routine inspection of customer content; prompt confidentiality and platform protection both apply. Customer agreements should set out prohibited uses and proportionate enforcement routes.
 
 ## 2. Why this matters for a new startup
 
@@ -113,6 +125,8 @@ The [implementation plan](lyceum-security-plan.md#appendix-b--training-curriculu
 Leadership owns the business risk and funds the security practice. Appoint a security coordinator and deputy, with named owners for physical security, IT, development, and production. People may hold several roles in a small team, while sensitive approvals still require independent people.
 
 Make reporting easy and safe, and give important suppliers explicit responsibilities and contacts. Review risks, access, exceptions, and control effectiveness regularly. Use evidence of protection and recovery to judge progress.
+
+Accountability also extends outside the company. Maintain a public route for reporting vulnerabilities—such as a security.txt file with stated handling expectations—and assess reports within defined times. [security.txt: A file format for security vulnerability disclosure](https://securitytxt.org/) When an incident affects our customers, notify them honestly and within the timescales our contracts and the law require; the obligations register records those routes and deadlines. Honest notification is part of accountability; silence about the substance of an incident is not a reputation strategy.
 
 The [implementation plan](lyceum-security-plan.md) assigns delivery roles, review schedules, and measures. NIST's six functions—Govern, Identify, Protect, Detect, Respond, and Recover—provide a useful completeness check. [NIST: Cybersecurity Framework 2.0 for Small Business](https://www.nist.gov/itl/smallbusinesscyber/nist-cybersecurity-framework-0)
 
