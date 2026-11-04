@@ -12,6 +12,8 @@ Security starts with understanding what matters to the business, what could harm
 
 For Lyceum, the starting questions are: What must we protect? Who could threaten it, deliberately or accidentally? How could they succeed? What would the consequences be? What evidence do we have that our current safeguards would stop, detect, or contain the event?
 
+Our objectives span confidentiality, integrity, and availability, against deliberate attack and accident alike. A threat model that considers only disclosure will mis-select controls: tampering with code, models, or bills can cause as much harm as theft, and prolonged unavailability is itself a security outcome.
+
 We must distinguish a documented intention from a verified protection. “We have backups” is an intention until we can demonstrate that we can restore the information we need within an acceptable time.
 
 ### Apply least privilege everywhere
@@ -38,7 +40,13 @@ This is a design principle, not a product or a statement of distrust in employee
 
 A **security-first approach** makes security part of choosing a supplier, designing a feature, opening an office, and launching a service. We define the necessary protections before committing to a design and make safe settings the default. Google's security-by-design guidance supports integrating security throughout development and operations. [Google: Implement security by design](https://docs.cloud.google.com/architecture/framework/security/implement-security-by-design)
 
-The level of effort should follow the risk. A public brochure and a customer-data export feature need different scrutiny. Where we accept a risk, a named leader should understand the consequences and set a date to revisit it.
+The level of effort should follow the risk. A public brochure and a customer-data export feature need different scrutiny. Risk can be mitigated, transferred, avoided, or accepted; transfer—for example through cyber insurance—complements controls and never replaces them. Where we accept a risk, a named leader should understand the consequences and set a date to revisit it.
+
+### Rely on open design and replaceable trust foundations
+
+Security must not depend on the secrecy of our designs or procedures—only on the protection of keys and other secrets. Open design also lets us seek external review without weakening ourselves.
+
+Cryptographic mechanisms in particular have a limited life. Keep an inventory of algorithms, keys, and certificates with named owners, and plan their replacement, including post-quantum migration where data lifetimes justify it.
 
 ### Assume a protection can fail
 
@@ -68,7 +76,9 @@ Security covers people's safety as well as equipment and information, wherever w
 
 Consider threats to leaders and other exposed colleagues, including impersonation, coercion, harassment, and industrial espionage. Additional protection should follow credible exposure. Staff should have a clear route to report concerns and obtain help.
 
-Physical safeguards and monitoring must respect privacy. The [implementation plan](lyceum-security-plan.md#appendix-a--baseline-operating-procedures) sets out workplace, visitor, travel, and equipment procedures.
+People are also a source of risk, not only a target of it. Screen candidates and contractors proportionately to the sensitivity of their role before granting access; have every person acknowledge the acceptable-use rules; and run departures as a controlled process—prompt access removal, return of equipment, and a reminder of continuing obligations. Least privilege and separation of duties limit insider misuse, but privileged activity should also be monitored for that purpose. Digital monitoring falls under the same privacy discipline as physical monitoring: defined purpose, limited access and retention, and legal review.
+
+Physical and digital safeguards and monitoring must respect privacy. The [implementation plan](lyceum-security-plan.md#appendix-a--baseline-operating-procedures) sets out workplace, visitor, travel, and equipment procedures.
 
 ## 5. Keep everyday IT controlled and manageable
 
@@ -78,7 +88,11 @@ Use individual company identities and phishing-resistant sign-in: authentication
 
 Grant access according to responsibilities, review it when those responsibilities change, and remove it promptly when it ends. Apply access checks to each service, including services reached through a private network.
 
-Choose applications and suppliers according to the information and access they receive. Handle information according to its sensitivity, limit sharing and retention, and independently verify sensitive financial instructions. Device settings, approved-tool procedures, and identity controls are detailed in the [implementation plan](lyceum-security-plan.md#appendix-a--baseline-operating-procedures).
+Choose applications and suppliers according to the information and access they receive. Handle information according to its sensitivity, limit sharing and retention, and independently verify sensitive financial instructions.
+
+Protect the channels through which customers and partners reach us as we protect our own: publish and enforce domain anti-spoofing for company email, watch for impersonation of Lyceum and lookalike domains, and maintain verified contact and payment routes that outsiders can authenticate.
+
+Device settings, approved-tool procedures, and identity controls are detailed in the [implementation plan](lyceum-security-plan.md#appendix-a--baseline-operating-procedures).
 
 ## 6. Build security into development
 
@@ -131,6 +145,8 @@ The [implementation plan](lyceum-security-plan.md#appendix-c--exception-workflow
 **Security** is our ability to protect people, information, and services against realistic threats. **Compliance** means meeting applicable laws, contracts, and standards. **Assurance** is the evidence that lets customers, auditors, or regulators assess our arrangements.
 
 These reinforce one another, but each needs attention. A secure system may still process data for an unlawful purpose; a documented process may fail against an overlooked threat. A certificate covers a defined scope and cannot establish that every activity is secure or compliant.
+
+Privacy by design and by default is a design principle, not only a legal duty: build purpose limitation, data minimization, and individuals' rights into features from the start, and assess new processing—such as reusing customer content for training—before it begins. The obligations register records the legal detail; the commitment to design for privacy belongs here.
 
 As an EU AI inference business serving regulated customers, Lyceum must assess obligations against its actual services, data flows, countries, customer commitments, and AI roles. Legal or a qualified adviser should establish applicability with service owners. Hosting in the EU or using a certified supplier does not establish Lyceum's own compliance.
 
