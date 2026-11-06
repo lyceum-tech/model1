@@ -1,0 +1,99 @@
+x-sandbox:
+  &sandbox
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
+services:
+  inference-proxy:
+    <<: *sandbox
+    build:
+      context: ${CANDIDATE_SOURCE}
+      dockerfile: iris/inference_proxy/Dockerfile
+      args:
+        BUILD_COMMIT: ${CANDIDATE_HEAD}
+        BUILD_VERSION: stack-review
+      labels:
+        org.opencontainers.image.revision: ${CANDIDATE_HEAD}
+        technology.lyceum.stack-review/source: trusted-commit
+    user: "65532:65532"
+    environment:
+      PORT: "8080"
+      LOG_LEVEL: info
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      SUPABASE_HTTP_URL: http://fixture:8080
+      SUPABASE_PSQL_URL: postgresql://review:review@fixture.invalid/review?sslmode=disable
+      SUPABASE_SERVICE_KEY: ${SUPABASE_KEY}
+      DEPLOYMENT_CONTROLLER_URL: http://fixture:8080
+      INFERENCE_PROXY_SERVICE_TOKEN: ${SERVICE_TOKEN}
+      IRIS_DEPLOYMENT_ZONE: internal
+      IRIS_ENDPOINT_TOKEN_SECRET: ${ENDPOINT_SECRET}
+      IRIS_ENDPOINT_SCHEME: http
+      CHAT_TIMEOUT_S: "45"
+      READ_TIMEOUT_S: "60"
+    depends_on:
+      fixture:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      runtime:
+        aliases:
+          - inference-proxy
+    expose:
+      - "8080"
+
+  fixture:
+    <<: *sandbox
+    build:
+      context: ${TRUSTED_ASSETS}
+      dockerfile: Dockerfile
+    env_file:
+      - ${RUNTIME_ENV}
+    command: ["python", "-m", "runtime_assets.fake_backend"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read(1)"
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    networks:
+      runtime:
+        aliases:
+          - ${DEPLOYMENT_ID}.internal
+    expose:
+      - "8000"
+      - "8080"
+
+  redis:
+    <<: *sandbox
+    image: redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+    user: "999:999"
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--requirepass", "${REDIS_PASSWORD}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping 2>/dev/null | grep -qx PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - redis-data:/data
+    networks:
+      - runtime
+
+networks:
+  runtime:
+    internal: true
+
+volumes:
+  redis-data:
