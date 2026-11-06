@@ -12,6 +12,7 @@ x-sandbox:
 services:
   inference-proxy:
     <<: *sandbox
+    image: ${RUNTIME_IMAGE}
     build:
       context: ${CANDIDATE_SOURCE}
       dockerfile: iris/inference_proxy/Dockerfile

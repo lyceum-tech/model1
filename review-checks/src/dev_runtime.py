@@ -10,6 +10,10 @@ MAX_OBSERVATION_BYTES = 256 * 1024
 COMMIT = re.compile(r"[0-9a-f]{40}")
 HOST = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,62}(?:\.[A-Za-z][A-Za-z0-9-]{0,62})*")
 USER = re.compile(r"[a-z_][a-z0-9_-]*\$?")
+REMOTE_COMPOSE_FAILURE = re.compile(
+    r"stack-review-runtime: candidate runtime test failed: (?P<stage>docker compose "
+    r"(?:config|build|up|exec|down|rm) failed)"
+)
 
 
 def validate_host(value):
@@ -73,7 +77,9 @@ def collect(host, base, head, policy, timeout=2100):
         env=environment,
     )
     if result.returncode != 0:
-        raise ValueError("Remote candidate test failed; check SSH, gh, Docker, installation, and cleanup logs")
+        failure = REMOTE_COMPOSE_FAILURE.fullmatch(result.stderr.strip())
+        detail = f": {failure['stage']}" if failure else ""
+        raise ValueError(f"Remote candidate test failed{detail}; check SSH, gh, Docker, installation, and cleanup logs")
     if len(result.stdout.encode()) > MAX_OBSERVATION_BYTES:
         raise ValueError("Remote runtime observations exceed their size limit")
     return validate_observations(json.loads(result.stdout), base, head, policy)

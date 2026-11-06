@@ -55,7 +55,13 @@ class Compose:
         self.prefix = ["docker", "compose", "--project-name", project, "--file", str(ASSETS / "compose.yaml")]
 
     def execute(self, *arguments, timeout=180, capture=False):
-        return checked(self.prefix + list(arguments), env=self.env, timeout=timeout, capture=capture)
+        return checked(
+            self.prefix + list(arguments),
+            env=self.env,
+            timeout=timeout,
+            capture=capture,
+            stage=f"docker compose {arguments[0]}",
+        )
 
     def cleanup(self):
         try:
@@ -135,15 +141,12 @@ def archive_commit(repository, commit, destination, env):
 
 
 def verify_image(compose, head):
-    image = compose.execute("images", "--quiet", "inference-proxy", timeout=30, capture=True).strip()
-    if not re.fullmatch(r"(?:sha256:)?[0-9a-f]{12,64}", image):
-        raise RuntimeError("Candidate image is missing")
     label = checked(
         [
             "docker",
             "image",
             "inspect",
-            image,
+            compose.env["RUNTIME_IMAGE"],
             "--format",
             '{{index .Config.Labels "org.opencontainers.image.revision"}}',
         ],
@@ -230,6 +233,7 @@ def collect(base, head, home=None):
                 RUNTIME_ENV=str(runtime_env),
             )
             project = f"stack-review-{head[:12]}-{secrets.token_hex(6)}"
+            env["RUNTIME_IMAGE"] = f"{project}:candidate"
             compose = Compose(project, env)
             try:
                 compose.execute("config", "--quiet", timeout=30)
@@ -269,10 +273,8 @@ def main():
         json.JSONDecodeError,
         subprocess.SubprocessError,
         tarfile.TarError,
-    ):
-        parser.exit(
-            1, "stack-review-runtime: candidate runtime test failed before reliable observations were produced\n"
-        )
+    ) as error:
+        parser.exit(1, f"stack-review-runtime: candidate runtime test failed: {error}\n")
     finally:
         signal.signal(signal.SIGTERM, previous)
     serialized = json.dumps(observations, separators=(",", ":")) + "\n"

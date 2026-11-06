@@ -248,10 +248,8 @@ def main() -> int:
         else:
             observations = json.loads(args.observations.read_text()) if args.observations else None
         report = assess(repo, base, head, observations)
-    except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError, subprocess.SubprocessError):
-        parser.exit(
-            1, "stack-review: could not evaluate the pull request; run with a valid URL and repository access\n"
-        )
+    except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"stack-review: {error}\n")
     if args.json:
         print(json.dumps(report, indent=2))
     else:

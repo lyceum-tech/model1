@@ -99,6 +99,14 @@ class DevRuntimeTest(unittest.TestCase):
         self.assertNotIn("private-token", str(error.exception))
         self.assertIn("cleanup", str(error.exception))
 
+    def test_known_compose_failure_is_reported_without_forwarding_arbitrary_stderr(self):
+        remote_error = "stack-review-runtime: candidate runtime test failed: docker compose build failed\n"
+        with patch.object(subprocess, "run", return_value=self.query(status=1, stderr=remote_error)):
+            with self.assertRaises(ValueError) as error:
+                dev_runtime.collect("pierre@horn", BASE, HEAD, POLICY)
+        self.assertIn("docker compose build failed", str(error.exception))
+        self.assertIn("cleanup", str(error.exception))
+
     def test_invalid_timeout_is_refused(self):
         for timeout in (False, 0, 30, 3601, "60"):
             with self.subTest(timeout=timeout):

@@ -87,6 +87,11 @@ class LifecycleTest(GitFixture):
         self.assertEqual(commands[-1][5], "down")
         self.assertEqual(commands[-1][6:8], ["--volumes", "--remove-orphans"])
         self.assertNotIn("CANDIDATE_HEAD", self.build.read_text())
+        inspections = [command for command in commands if command[:2] == ["image", "inspect"]]
+        self.assertEqual(len(inspections), 1)
+        self.assertTrue(inspections[0][2].startswith(f"stack-review-{self.head[:12]}-"))
+        self.assertTrue(inspections[0][2].endswith(":candidate"))
+        self.assertNotIn("images", [command[5] for command in commands if command[:1] == ["compose"]])
 
     def test_mismatched_image_revision_never_becomes_evidence(self):
         with patch.dict(os.environ, {"REVIEW_TEST_IMAGE_LABEL": self.base}):
