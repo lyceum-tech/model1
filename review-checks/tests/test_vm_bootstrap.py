@@ -22,6 +22,12 @@ class BootstrapTest(unittest.TestCase):
         self.assertIn("existing Ubuntu or Debian Docker host", result.stdout)
         self.assertIn("private keys must never be copied", result.stdout)
 
+    def test_authentication_uses_gh_web_flow_without_token_arguments(self):
+        script = BOOTSTRAP.read_text()
+        self.assertIn("gh auth login --hostname github.com --git-protocol https --web", script)
+        self.assertNotIn("--with-token", script)
+        self.assertNotIn("github_token", script)
+
     def test_rejects_options_without_values(self):
         for option in ("--branch", "--repository", "--ssh-public-key"):
             with self.subTest(option=option):
