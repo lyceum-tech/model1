@@ -48,9 +48,9 @@ The script is idempotent. It creates the `stackreview` account and `/var/lib/sta
 `/usr/local/bin/stack-review`. If Docker or Compose is available it is left in place. GitHub CLI is installed
 only when missing; a new download is pinned and checked against its published SHA-256 checksum.
 
-On first installation, enter a read-only GitHub token with access to model1 and Lyceum when prompted. The
-script forwards it to `gh auth login` over standard input, without putting it in process arguments or logs.
-Later runs reuse that authentication and update the model1 checkout.
+On first installation, complete GitHub CLI's interactive web/device sign-in using an identity with access to
+model1 and Lyceum. The displayed device code can be entered in a browser on your usual machine; no personal
+access token is passed to the bootstrap. Later runs reuse the `gh` authentication and update the checkout.
 
 Connect using the configured account:
 

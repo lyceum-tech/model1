@@ -118,15 +118,9 @@ as_runtime_user() {
 }
 
 if ! as_runtime_user gh auth status --hostname github.com >/dev/null 2>&1; then
-    echo "Authenticate $RUNTIME_USER with a read-only GitHub token for model1 and Lyceum." >&2
-    if ! read -r -s -p "GitHub token (input hidden): " github_token </dev/tty; then
-        die "a terminal is required for GitHub authentication, or authenticate gh as $RUNTIME_USER first"
-    fi
-    echo >&2
-    [[ -n "$github_token" ]] || die "the GitHub token must not be empty"
-    printf '%s\n' "$github_token" |
-        as_runtime_user gh auth login --hostname github.com --git-protocol https --with-token
-    unset github_token
+    echo "Authenticate $RUNTIME_USER through GitHub CLI for access to model1 and Lyceum." >&2
+    as_runtime_user gh auth login --hostname github.com --git-protocol https --web </dev/tty ||
+        die "GitHub authentication failed; rerun with a terminal or authenticate gh as $RUNTIME_USER first"
     as_runtime_user gh auth setup-git --hostname github.com
 fi
 
@@ -158,4 +152,4 @@ fi
 as_runtime_user docker info --format 'Docker server {{.ServerVersion}} is accessible to stackreview'
 as_runtime_user git -C "$SOURCE_DIR" log -1 --format='Installed model1 commit %H'
 "$EXECUTABLE" --help >/dev/null
-echo "Bootstrap complete. Authenticate gh as $RUNTIME_USER with read-only repository access."
+echo "Bootstrap complete. GitHub authentication is managed by gh as $RUNTIME_USER."
