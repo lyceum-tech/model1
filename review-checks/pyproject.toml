@@ -11,13 +11,15 @@ dependencies = ["pyyaml==6.0.3"]
 
 [project.scripts]
 stack-review = "review_report:main"
+stack-review-runtime = "runtime_agent:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["gates", "repository_checks", "review_report"]
+py-modules = ["dev_runtime", "gates", "repository_checks", "review_report", "runtime_agent"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 review_rules = ["policy.json"]
+runtime_assets = ["Dockerfile", "compose.yaml", "fake_backend.py", "probe.py"]
