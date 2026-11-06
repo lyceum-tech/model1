@@ -20,18 +20,28 @@ class BootstrapTest(unittest.TestCase):
         result = self.run_bootstrap("--help")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("existing Ubuntu or Debian Docker host", result.stdout)
-        self.assertIn("private keys must never be copied", result.stdout)
+        self.assertIn("private keys must never be copied", result.stdout.lower())
 
     def test_authentication_selects_the_existing_gh_identity_without_token_arguments(self):
         script = BOOTSTRAP.read_text()
         self.assertIn('gh auth switch --hostname github.com --user "$github_user"', script)
-        self.assertIn("gh auth login --hostname github.com --git-protocol https --web", script)
+        self.assertIn('runuser -u "$runtime_user" -- env HOME="$runtime_home"', script)
+        self.assertIn("as_runtime_user env BROWSER=echo gh auth login", script)
         self.assertIn("gh api user --jq .login", script)
+        self.assertIn('runtime_dir="$runtime_home/.stack-review"', script)
+        self.assertNotIn('"$runtime_home/venv"', script)
         self.assertNotIn("--with-token", script)
         self.assertNotIn("github_token", script)
 
+    def test_public_keys_are_appended_without_replacing_existing_ones(self):
+        script = BOOTSTRAP.read_text()
+        self.assertIn('grep -Fqx -f "$ssh_public_key" "$authorized_keys"', script)
+        self.assertIn('cat "$ssh_public_key" >> "$authorized_keys"', script)
+        self.assertNotIn('"$ssh_public_key" "$authorized_keys"\n', script)
+
     def test_rejects_options_without_values(self):
-        for option in ("--branch", "--repository", "--github-user", "--ssh-public-key"):
+        options = ("--branch", "--repository", "--github-user", "--runtime-user", "--ssh-public-key")
+        for option in options:
             with self.subTest(option=option):
                 result = self.run_bootstrap(option)
                 self.assertNotEqual(result.returncode, 0)
@@ -44,6 +54,14 @@ class BootstrapTest(unittest.TestCase):
             (("--repository", "file:///tmp/model1.git"), "HTTPS Git URL"),
             (("--github-user", "invalid_name"), "valid GitHub username"),
             (("--github-user", "-invalid"), "valid GitHub username"),
+            (
+                ("--runtime-user", "../root", "--github-user", "pierrot-la-lune"),
+                "invalid Linux runtime username",
+            ),
+            (
+                ("--runtime-user", "-root", "--github-user", "pierrot-la-lune"),
+                "invalid Linux runtime username",
+            ),
             ((), "github-user is required"),
             (("unexpected",), "unknown argument"),
         ):
