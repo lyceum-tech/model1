@@ -47,7 +47,7 @@ Cleanup always attempts `docker compose down --volumes --remove-orphans`, includ
 
 ## Prepare a Linux Docker host
 
-Use a dedicated Ubuntu 24.04 or Debian host for untrusted candidate builds. Do not use shared development, staging, or production infrastructure: membership in the Docker group grants effective host root access. The bootstrap can use an existing Docker daemon, or install Docker and Compose v2 when absent.
+Use a dedicated Ubuntu 24.04 or Debian host for untrusted candidate builds. Do not use shared development, staging, or production infrastructure: membership in the Docker group grants effective host root access. The bootstrap can use an existing Docker daemon, or install Docker and Compose v2 when absent. Compose requires Buildx 0.17 or newer; the bootstrap installs the checksum-verified upstream Buildx 0.30.1 plugin when the distribution version is older. Installer downloads need space on the root filesystem (including `/tmp`), while the Docker data root needs enough space for candidate images and build cache.
 
 Run the script as root, selecting the Linux account and the GitHub identity it owns. With the runtime change installed on model1 `main`, update an existing `pierre` installation whose `gh` login is pierrot-la-lune:
 

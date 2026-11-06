@@ -4,6 +4,7 @@ set -euo pipefail
 readonly SOURCE_DIR=/opt/lyceum-stack-review
 readonly EXECUTABLE=/usr/local/bin/stack-review
 readonly GH_VERSION=2.103.3
+readonly BUILDX_VERSION=0.30.1
 
 repository=https://github.com/lyceum-tech/model1.git
 branch=main
@@ -157,6 +158,38 @@ fi
     die "gh authenticated an unexpected GitHub identity instead of $github_user"
 as_runtime_user gh auth setup-git --hostname github.com
 
+install_buildx_if_needed() {
+    local current_version architecture archive release download_dir expected actual
+    current_version=$(docker buildx version 2>/dev/null | sed -nE '1s/^github.com\/docker\/buildx v?([^ ]+).*$/\1/p')
+    if dpkg --compare-versions "$current_version" ge 0.17 2>/dev/null; then
+        return
+    fi
+    case "$(uname -m)" in
+        x86_64) architecture=amd64 ;;
+        aarch64|arm64) architecture=arm64 ;;
+        *) die "unsupported machine architecture: $(uname -m)" ;;
+    esac
+    archive="buildx-v${BUILDX_VERSION}.linux-${architecture}"
+    release="https://github.com/docker/buildx/releases/download/v${BUILDX_VERSION}"
+    download_dir=$(mktemp -d)
+    trap 'rm -rf -- "$download_dir"' EXIT
+    chown "$runtime_user:$runtime_group" "$download_dir"
+    as_runtime_user curl --fail --location --silent --show-error --output "$download_dir/$archive" \
+        "$release/$archive"
+    as_runtime_user curl --fail --location --silent --show-error --output "$download_dir/checksums.txt" \
+        "$release/checksums.txt"
+    expected=$(as_runtime_user awk -v filename="$archive" \
+        '{ name=$2; sub(/^\*/, "", name); if (name == filename) print $1 }' "$download_dir/checksums.txt")
+    [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || die "could not verify the Buildx download"
+    actual=$(as_runtime_user sha256sum "$download_dir/$archive" | awk '{print $1}')
+    [[ "$actual" == "$expected" ]] || die "Buildx checksum mismatch"
+    install -d -m 0755 /usr/local/lib/docker/cli-plugins
+    install -m 0755 "$download_dir/$archive" /usr/local/lib/docker/cli-plugins/docker-buildx
+    rm -rf -- "$download_dir"
+    trap - EXIT
+}
+install_buildx_if_needed
+
 [[ ! -L "$SOURCE_DIR" ]] || die "$SOURCE_DIR must not be a symbolic link"
 if [[ -d "$SOURCE_DIR/.git" ]]; then
     [[ "$(git -C "$SOURCE_DIR" remote get-url origin)" == "$repository" ]] ||
@@ -186,7 +219,10 @@ else
 fi
 
 docker_version=$(as_runtime_user docker info --format '{{.ServerVersion}}')
-echo "Docker server $docker_version is accessible to $runtime_user"
+buildx_version=$(as_runtime_user docker buildx version | sed -nE '1s/^github.com\/docker\/buildx v?([^ ]+).*$/\1/p')
+dpkg --compare-versions "$buildx_version" ge 0.17 2>/dev/null ||
+    die "Buildx 0.17 or newer must be accessible to $runtime_user"
+echo "Docker server $docker_version and Buildx $buildx_version are accessible to $runtime_user"
 as_runtime_user git -C "$SOURCE_DIR" log -1 --format='Installed model1 commit %H'
 "$EXECUTABLE" --help >/dev/null
 echo "Bootstrap complete. $runtime_user uses gh as $github_user."
