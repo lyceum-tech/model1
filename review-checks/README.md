@@ -27,6 +27,40 @@ Use `--json` for the complete report and `--cache-dir` to override the default c
 
 Checks 4–17 require runtime observations for changed code in their declared scope. Without complete candidate-, base-, and policy-bound observations they intentionally remain yellow. Supply trusted observations with `--observations observations.json`; files from the candidate cannot alter that binding. Inspect `stack_review` policy and each rule's required scenario names before collecting observations.
 
+## Prepare a Linux Docker host
+
+Use a dedicated Ubuntu 24.04 or Debian host for untrusted candidate builds. Do not use shared development,
+staging, or production infrastructure: membership in the Docker group grants effective host root access.
+The bootstrap can use an existing Docker daemon, or install Docker and Compose v2 when they are absent.
+
+Copy only an SSH **public** key to the host, then run the script as root. Use the `pierre/review-cli` branch
+until model1 PR #5 is merged; after that, omit `--branch` to install `main`:
+
+```bash
+scp ~/.ssh/id_ed25519.pub admin@HOST:/tmp/stack-review.pub
+ssh -t admin@HOST 'sudo bash -s -- --branch pierre/review-cli --ssh-public-key /tmp/stack-review.pub' \
+    < review-checks/vm/bootstrap.sh
+ssh admin@HOST rm /tmp/stack-review.pub
+```
+
+The script is idempotent. It creates the `stackreview` account and `/var/lib/stack-review`, clones model1 into
+`/opt/lyceum-stack-review`, installs Python dependencies into a dedicated virtual environment, and exposes
+`/usr/local/bin/stack-review`. If Docker or Compose is available it is left in place. GitHub CLI is installed
+only when missing; a new download is pinned and checked against its published SHA-256 checksum.
+
+On first installation, enter a read-only GitHub token with access to model1 and Lyceum when prompted. The
+script forwards it to `gh auth login` over standard input, without putting it in process arguments or logs.
+Later runs reuse that authentication and update the model1 checkout.
+
+Connect using the configured account:
+
+```bash
+ssh stackreview@HOST stack-review --help
+```
+
+Host preparation is separate from creating and testing an isolated per-PR Compose environment. The bootstrap
+does not expose an HTTP service, copy candidate secrets to the host, or run candidate code by itself.
+
 ## Validate this project
 
 ```bash
