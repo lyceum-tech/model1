@@ -4,7 +4,10 @@ import json
 import os
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+import yaml
 
 from review_rules import rule_09
 from runtime_assets import fake_backend, probe
@@ -124,6 +127,25 @@ class ContractsTest(unittest.TestCase):
             with self.subTest(host=host):
                 with self.assertRaises(ValueError):
                     probe.connection(host)
+
+
+class RuntimeTopologyTest(unittest.TestCase):
+    def test_candidate_has_valid_bounded_routing_limits(self):
+        compose = yaml.safe_load((Path(__file__).parents[1] / "src" / "runtime_assets" / "compose.yaml").read_text())
+        limits = json.loads(compose["services"]["inference-proxy"]["environment"]["ROUTING_LIMITS"])
+        self.assertEqual(
+            limits,
+            {
+                "iris": {
+                    "*": {
+                        "max_pinned_sessions": 1,
+                        "max_global_in_flight_request_slots": 2,
+                        "global_in_flight_request_slots_reserved_for_pinned_sessions": 1,
+                        "max_per_session_in_flight_request_slots": 1,
+                    }
+                }
+            },
+        )
 
 
 class FakeBackendTest(unittest.TestCase):

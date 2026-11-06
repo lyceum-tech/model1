@@ -36,6 +36,13 @@ services:
       IRIS_DEPLOYMENT_ZONE: internal
       IRIS_ENDPOINT_TOKEN_SECRET: ${ENDPOINT_SECRET}
       IRIS_ENDPOINT_SCHEME: http
+      ROUTING_LIMITS: >-
+        {"iris":{"*":{
+        "max_pinned_sessions":1,
+        "max_global_in_flight_request_slots":2,
+        "global_in_flight_request_slots_reserved_for_pinned_sessions":1,
+        "max_per_session_in_flight_request_slots":1
+        }}}
       CHAT_TIMEOUT_S: "45"
       READ_TIMEOUT_S: "60"
     depends_on:
