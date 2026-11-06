@@ -9,15 +9,17 @@ readonly GH_VERSION=2.103.3
 
 repository=https://github.com/lyceum-tech/model1.git
 branch=main
+github_user=
 ssh_public_key=
 
 usage() {
     cat <<'EOF'
-Usage: sudo bash bootstrap.sh [--branch NAME] [--ssh-public-key FILE.pub]
+Usage: sudo bash bootstrap.sh --github-user NAME [--branch NAME] [--ssh-public-key FILE.pub]
 
 Prepare an existing Ubuntu or Debian Docker host for stack-review.
-The default branch is main. The optional public key authorizes SSH access
-for the stackreview account; private keys must never be copied to the host.
+The default branch is main. Select the existing GitHub CLI identity using
+--github-user; this is separate from the stackreview Linux account.
+The optional public key authorizes Linux SSH access; private keys must never be copied to the host.
 EOF
 }
 
@@ -36,6 +38,11 @@ while (($#)); do
         --repository)
             (($# >= 2)) || die "--repository requires a value"
             repository=$2
+            shift 2
+            ;;
+        --github-user)
+            (($# >= 2)) || die "--github-user requires a value"
+            github_user=$2
             shift 2
             ;;
         --ssh-public-key)
@@ -57,6 +64,8 @@ done
     die "invalid branch name"
 [[ "$repository" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]+\.git$ ]] ||
     die "repository must be an HTTPS Git URL"
+[[ "$github_user" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]] ||
+    die "--github-user is required and must be a valid GitHub username"
 [[ "$(uname -s)" == Linux ]] || die "an existing Linux Docker host is required"
 ((EUID == 0)) || die "run with sudo on the Docker host"
 command -v apt-get >/dev/null || die "Ubuntu or Debian with apt-get is required"
@@ -117,12 +126,14 @@ as_runtime_user() {
     runuser -u "$RUNTIME_USER" -- "$@"
 }
 
-if ! as_runtime_user gh auth status --hostname github.com >/dev/null 2>&1; then
-    echo "Authenticate $RUNTIME_USER through GitHub CLI for access to model1 and Lyceum." >&2
+if ! as_runtime_user gh auth switch --hostname github.com --user "$github_user" >/dev/null 2>&1; then
+    echo "Sign in through GitHub CLI as $github_user for access to model1 and Lyceum." >&2
     as_runtime_user gh auth login --hostname github.com --git-protocol https --web </dev/tty ||
         die "GitHub authentication failed; rerun with a terminal or authenticate gh as $RUNTIME_USER first"
-    as_runtime_user gh auth setup-git --hostname github.com
 fi
+[[ "$(as_runtime_user gh api user --jq .login)" == "$github_user" ]] ||
+    die "gh authenticated an unexpected GitHub identity instead of $github_user"
+as_runtime_user gh auth setup-git --hostname github.com
 
 [[ ! -L "$SOURCE_DIR" ]] || die "$SOURCE_DIR must not be a symbolic link"
 if [[ -d "$SOURCE_DIR/.git" ]]; then

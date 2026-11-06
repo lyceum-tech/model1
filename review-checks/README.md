@@ -33,24 +33,28 @@ Use a dedicated Ubuntu 24.04 or Debian host for untrusted candidate builds. Do n
 staging, or production infrastructure: membership in the Docker group grants effective host root access.
 The bootstrap can use an existing Docker daemon, or install Docker and Compose v2 when they are absent.
 
-Copy only an SSH **public** key to the host, then run the script as root. Use the `pierre/review-cli-gh-auth`
-branch until the web-authentication change is merged; after that, omit `--branch` to install `main`:
+Copy only an SSH **public** key to the host, then run the script as root. Use the
+`pierre/review-cli-gh-identity` branch until the identity-selection change is merged; after that, omit
+`--branch` to install `main`. Replace the example `--github-user` with your existing GitHub username:
 
 ```bash
 scp ~/.ssh/id_ed25519.pub admin@HOST:/tmp/stack-review.pub
-ssh -t admin@HOST 'sudo bash -s -- --branch pierre/review-cli-gh-auth --ssh-public-key /tmp/stack-review.pub' \
+ssh -t admin@HOST \
+    'sudo bash -s -- --branch pierre/review-cli-gh-identity --github-user pierrot-la-lune --ssh-public-key /tmp/stack-review.pub' \
     < review-checks/vm/bootstrap.sh
 ssh admin@HOST rm /tmp/stack-review.pub
 ```
 
-The script is idempotent. It creates the `stackreview` account and `/var/lib/stack-review`, clones model1 into
-`/opt/lyceum-stack-review`, installs Python dependencies into a dedicated virtual environment, and exposes
-`/usr/local/bin/stack-review`. If Docker or Compose is available it is left in place. GitHub CLI is installed
-only when missing; a new download is pinned and checked against its published SHA-256 checksum.
+The script is idempotent. It creates the `stackreview` Linux account and `/var/lib/stack-review`, clones model1
+into `/opt/lyceum-stack-review`, installs Python dependencies into a dedicated virtual environment, and
+exposes `/usr/local/bin/stack-review`. If Docker or Compose is available it is left in place. GitHub CLI is
+installed only when missing; a new download is pinned and checked against its published SHA-256 checksum.
 
-On first installation, complete GitHub CLI's interactive web/device sign-in using an identity with access to
-model1 and Lyceum. The displayed device code can be entered in a browser on your usual machine; no personal
-access token is passed to the bootstrap. Later runs reuse the `gh` authentication and update the checkout.
+The Linux account is deliberately separate from the GitHub identity. `--github-user` is required: if `gh`
+already has that identity, the script selects it with `gh auth switch`. Otherwise complete GitHub CLI's
+interactive web/device sign-in as that same GitHub user. The displayed device code can be entered in a browser
+on your usual machine; no personal access token is passed to the bootstrap. The script verifies the resulting
+identity with `gh api user`. Later runs reuse the selected identity and update the model1 checkout.
 
 Connect using the configured account:
 
