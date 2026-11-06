@@ -1,0 +1,62 @@
+{
+  "environments": {
+    "devel": "infra/inventory/devel/config.yml",
+    "staging": "infra/inventory/staging/config.yml",
+    "production": "infra/inventory/production/config.yml"
+  },
+  "configuration": {
+    "LYC_API_URL": {
+      "type": "https"
+    },
+    "LYC_HYDRA_GRPC_PORT": {
+      "type": "port"
+    },
+    "LYC_REDIS_AUTH_STRING_SECRET": {
+      "type": "sops"
+    }
+  },
+  "generators": [
+    {
+      "generator": "scripts/generate-vendor-aliases",
+      "source": "iris/inference_proxy/internal/modelid/aliases.json",
+      "target": "iris/deployment_controller/internal/pricing/vendor_aliases.json"
+    }
+  ],
+  "validation": {
+    "tasks": {
+      "infra/terraform/mise.toml": {
+        "lint": {
+          "run": "$LYC_PATH_REPO_ROOT/mise/scripts/terraform-lint.bash",
+          "depends": [
+            ":validate"
+          ]
+        },
+        "validate": {
+          "run": "python3 $LYC_PATH_REPO_ROOT/mise/scripts/terraform_validate.py"
+        }
+      }
+    },
+    "workflow_tasks": {
+      ".github/workflows/check-lint-and-test.yml": [
+        "//...:lint",
+        "//...:test-fast",
+        "//...:test-integration"
+      ]
+    },
+    "implementations": [
+      "mise/scripts/terraform-lint.bash",
+      "mise/scripts/terraform_validate.py"
+    ],
+    "implementation_sha256": {
+      "mise/scripts/terraform-lint.bash": "7a163f4b918bd9c615d06c96f9790cf8694b6fb464c624cb70054a2fbc64ce01",
+      "mise/scripts/terraform_validate.py": "2934d14cc04e5fcb3611522daf8357e74b2ffe52909947588e4d7548777557b9"
+    },
+    "environments": [
+      "devel",
+      "staging",
+      "production",
+      "platform-staging",
+      "platform-production"
+    ]
+  }
+}

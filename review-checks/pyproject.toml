@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lyceum-stack-review"
+version = "0.1.0"
+description = "Run advisory review checks against a GitHub pull request"
+requires-python = ">=3.11"
+dependencies = ["pyyaml==6.0.3"]
+
+[project.scripts]
+stack-review = "review_report:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["gates", "repository_checks", "review_report"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+review_rules = ["policy.json"]
