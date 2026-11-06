@@ -33,33 +33,35 @@ Use a dedicated Ubuntu 24.04 or Debian host for untrusted candidate builds. Do n
 staging, or production infrastructure: membership in the Docker group grants effective host root access.
 The bootstrap can use an existing Docker daemon, or install Docker and Compose v2 when they are absent.
 
-Copy only an SSH **public** key to the host, then run the script as root. Use the
-`pierre/review-cli-gh-identity` branch until the identity-selection change is merged; after that, omit
-`--branch` to install `main`. Replace the example `--github-user` with your existing GitHub username:
+Run the script as root and select both the Linux runtime account and the GitHub identity it already owns.
+Use the `pierre/review-cli-existing-user` branch until this change is merged; after that, omit `--branch`.
+For example, `pierre` is the Linux account whose `gh` login uses pierrot-la-lune:
 
 ```bash
-scp ~/.ssh/id_ed25519.pub admin@HOST:/tmp/stack-review.pub
-ssh -t admin@HOST \
-    'sudo bash -s -- --branch pierre/review-cli-gh-identity --github-user pierrot-la-lune --ssh-public-key /tmp/stack-review.pub' \
-    < review-checks/vm/bootstrap.sh
-ssh admin@HOST rm /tmp/stack-review.pub
+sudo ./review-checks/vm/bootstrap.sh \
+    --branch pierre/review-cli-existing-user \
+    --runtime-user pierre \
+    --github-user pierrot-la-lune
 ```
 
-The script is idempotent. It creates the `stackreview` Linux account and `/var/lib/stack-review`, clones model1
-into `/opt/lyceum-stack-review`, installs Python dependencies into a dedicated virtual environment, and
-exposes `/usr/local/bin/stack-review`. If Docker or Compose is available it is left in place. GitHub CLI is
-installed only when missing; a new download is pinned and checked against its published SHA-256 checksum.
+The script is idempotent. It reuses the selected Linux account and its home directory, creates `.stack-review/runs`
+and `.stack-review/cache` there, clones model1 into `/opt/lyceum-stack-review`, and installs Python dependencies
+into `.stack-review/venv`. `/usr/local/bin/stack-review` uses that installation. The default `--runtime-user` is
+`stackreview`, which the script can create for a separate runtime; another account specified explicitly must
+already exist. Docker membership grants effective host root access, so use only a dedicated disposable host.
 
-The Linux account is deliberately separate from the GitHub identity. `--github-user` is required: if `gh`
-already has that identity, the script selects it with `gh auth switch`. Otherwise complete GitHub CLI's
-interactive web/device sign-in as that same GitHub user. The displayed device code can be entered in a browser
-on your usual machine; no personal access token is passed to the bootstrap. The script verifies the resulting
-identity with `gh api user`. Later runs reuse the selected identity and update the model1 checkout.
+The existing account keeps its normal home-based `gh` configuration. If `gh` has the requested GitHub identity,
+the script selects it with `gh auth switch`; a `pierre` account already authenticated as pierrot-la-lune needs
+no new login. Otherwise complete `gh auth login --web` as that GitHub user. For headless hosts, the script prints
+the browser URL rather than requiring `xdg-open`. No personal access token is passed to the bootstrap, and the
+identity is checked with `gh api user`.
 
-Connect using the configured account:
+To add SSH access to a different account, pass `--ssh-public-key FILE.pub`. The script appends a missing public
+key without replacing existing `authorized_keys`; never supply a private key. With the example above, connect as
+the existing account:
 
 ```bash
-ssh stackreview@HOST stack-review --help
+ssh pierre@HOST stack-review --help
 ```
 
 Host preparation is separate from creating and testing an isolated per-PR Compose environment. The bootstrap
