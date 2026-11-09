@@ -20,6 +20,8 @@ REPOSITORY_URL = f"https://github.com/{REPOSITORY}.git"
 ASSETS = Path(__file__).parent / "runtime_assets"
 MAX_PROBE_BYTES = 16 * 1024
 COMMIT = re.compile(r"[0-9a-f]{40}")
+DEV_RUNNER = ASSETS / "lyceum_dev" / "dev"
+DEV_CHECKS = (("pre-commit", "pre-commit"), ("lint", "lint"), ("test-fast", "test"), ("integration", "integration"))
 
 
 def run_command(command, *, env, timeout, capture=False):
@@ -158,7 +160,7 @@ def verify_image(compose, head):
         raise RuntimeError("Candidate image is not bound to the pull request head")
 
 
-def comparison_fact(project, env, timeout=150):
+def comparison_fact(project, env, timeout=600):
     output = checked(
         [
             "docker",
@@ -173,6 +175,7 @@ def comparison_fact(project, env, timeout=150):
             "python",
             "-m",
             "runtime_assets.probe",
+            "--all",
         ],
         env=env,
         timeout=timeout,
@@ -180,18 +183,53 @@ def comparison_fact(project, env, timeout=150):
     )
     if len(output.encode()) > MAX_PROBE_BYTES:
         raise RuntimeError("Candidate probe exceeded its output budget")
-    fact = json.loads(output)
-    if set(fact) == {"scenario", "comparisons"}:
-        if fact["scenario"] != "plain" or set(fact["comparisons"]) != {"text", "model", "usage", "finish_reason"}:
-            raise RuntimeError("Candidate probe returned unexpected fields")
-        if not all(type(value) is bool for value in fact["comparisons"].values()):
-            raise RuntimeError("Candidate probe returned invalid comparisons")
-    elif fact != {"scenario": "plain", "error": "response-contract-inconclusive"}:
-        raise RuntimeError("Candidate probe returned malformed evidence")
-    return fact
+    facts = json.loads(output)
+    scenarios = ("plain", "tools", "search", "stop-string")
+    if not isinstance(facts, list) or len(facts) != len(scenarios):
+        raise RuntimeError("Candidate probe returned missing or duplicate scenarios")
+    if [fact.get("scenario") for fact in facts if isinstance(fact, dict)] != list(scenarios):
+        raise RuntimeError("Candidate probe returned unexpected scenarios")
+    for fact in facts:
+        if set(fact) == {"scenario", "comparisons"}:
+            if not isinstance(fact["comparisons"], dict) or set(fact["comparisons"]) != {
+                "text", "model", "usage", "finish_reason"
+            }:
+                raise RuntimeError("Candidate probe returned unexpected fields")
+            if not all(type(value) is bool for value in fact["comparisons"].values()):
+                raise RuntimeError("Candidate probe returned invalid comparisons")
+        elif fact != {"scenario": fact["scenario"], "error": "response-contract-inconclusive"}:
+            raise RuntimeError("Candidate probe returned malformed evidence")
+    return facts
 
 
-def collect(base, head, home=None):
+def development_check_facts(source, env):
+    if (source / ".git").exists():
+        raise RuntimeError("Development checks require an archive without Git metadata")
+    checked(["git", "-C", str(source), "init", "--quiet"], env=env, timeout=30)
+    checked(["git", "-C", str(source), "add", "--all"], env=env, timeout=60)
+    checked(
+        [
+            "git", "-C", str(source), "-c", "user.name=stack-review", "-c", "user.email=stack-review@localhost",
+            "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "--no-gpg-sign", "-m", "Candidate archive",
+        ],
+        env=env,
+        timeout=60,
+    )
+    check_env = env.copy()
+    check_env.pop("LYCEUM_DEV_GNUPG", None)
+    check_env["LYCEUM_DEV_REPO"] = str(source)
+    checked([str(DEV_RUNNER), "build"], env=check_env, timeout=1800, stage="development image build")
+    checks = []
+    for name, command in DEV_CHECKS:
+        result = run_command([str(DEV_RUNNER), command], env=check_env, timeout=1800)
+        if name == "pre-commit":
+            checked(["git", "-C", str(source), "reset", "--hard", "--quiet", "HEAD"], env=env, timeout=60)
+            checked(["git", "-C", str(source), "clean", "-ffd", "--quiet"], env=env, timeout=60)
+        checks.append({"name": name, "status": "passed" if result.returncode == 0 else "failed"})
+    return {"checks": checks}
+
+
+def collect(base, head, home=None, *, dev_tests=False):
     valid_commit(base)
     valid_commit(head)
     root = home or Path(os.environ.get("STACK_REVIEW_HOME", Path.home() / ".stack-review"))
@@ -218,6 +256,7 @@ def collect(base, head, home=None):
                 "SERVICE_TOKEN": secrets.token_urlsafe(40),
                 "ENDPOINT_SECRET": secrets.token_urlsafe(40),
                 "SUPABASE_KEY": secrets.token_urlsafe(40),
+                "LINKUP_API_KEY": secrets.token_urlsafe(40),
                 "REDIS_PASSWORD": secrets.token_urlsafe(40),
                 "DEPLOYMENT_ID": "runtime-fake-dep",
             }
@@ -240,15 +279,18 @@ def collect(base, head, home=None):
                 compose.execute("build", "--pull", "fixture", "inference-proxy", timeout=1500)
                 verify_image(compose, head)
                 compose.execute("up", "--detach", "--wait", "--wait-timeout", "90", timeout=150)
-                fact = comparison_fact(project, env)
+                facts = comparison_fact(project, env)
             finally:
                 compose.cleanup()
+            rules = {"9": facts}
+            if dev_tests:
+                rules["3"] = development_check_facts(source, env)
             return {
                 "base": base,
                 "head": head,
                 "policy_sha256": policy_digest(),
                 "runtime": {"candidate_revision_verified": True, "backend": "fake-openai-compatible"},
-                "rules": {"9": [fact]},
+                "rules": rules,
             }
 
 
@@ -261,10 +303,11 @@ def main():
     parser.add_argument("--base", required=True, type=valid_commit)
     parser.add_argument("--head", required=True, type=valid_commit)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--dev-tests", action="store_true")
     args = parser.parse_args()
     previous = signal.signal(signal.SIGTERM, interrupted)
     try:
-        observations = collect(args.base, args.head)
+        observations = collect(args.base, args.head, dev_tests=args.dev_tests)
     except (
         OSError,
         RuntimeError,

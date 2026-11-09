@@ -27,6 +27,18 @@ Use `--json` for the complete report and `--cache-dir` to override the default c
 
 Checks 4–17 require runtime observations for changed code in their declared scope. Without complete candidate-, base-, and policy-bound observations they intentionally remain yellow. Supply trusted observations with `--observations observations.json`; files from the candidate cannot alter that binding. Inspect `stack_review` policy and each rule's required scenario names before collecting observations.
 
+## Develop Lyceum in Docker
+
+Use the Linux development container to run Lyceum's complete lint and test task groups against the sibling `../lyceum` checkout:
+
+```bash
+./review-checks/vm/lyceum-dev/dev build
+./review-checks/vm/lyceum-dev/dev shell
+./review-checks/vm/lyceum-dev/dev check
+```
+
+The checkout remains editable on the host, and the container runs as the host user. Integration tests share the host Docker socket and network, so use this only on a dedicated development machine with code you trust. See `review-checks/vm/lyceum-dev/README.md` for individual commands, cache handling, and credential requirements.
+
 ## Build and probe on a Linux Docker host
 
 After bootstrapping a host with the runtime support described below, run this from your normal workstation:
@@ -37,9 +49,22 @@ stack-review --dev-vm pierre@horn https://github.com/lyceum-tech/lyceum/pull/429
 
 The workstation reads the PR metadata from GitHub and evaluates static checks from an immutable Git snapshot. The independently authenticated host clones Lyceum, archives the exact `head.sha`, builds the candidate `inference-proxy`, and verifies the resulting image's trusted revision label. `--repo` and `--cache-dir` affect only the local static snapshot, never the remote candidate. `--observations` cannot be combined with `--dev-vm`.
 
-The first runtime slice exercises one `plain` chat scenario: a non-streaming completion followed by a streamed completion through the candidate proxy to a deterministic fake OpenAI-compatible backend. It compares text, model identity, usage, finish reason, and normal SSE termination. Rule 9 also requires `tools`, `search`, and `stop-string`, so a successful plain comparison leaves rule 9 yellow and explicitly identifies those missing scenarios. It is not a claim that the whole stack, production inference, or unrelated Execlet credential changes have passed.
+Add `--dev-tests` to run the complete Lyceum check suite in the development container after the runtime probe:
 
-This slice does not run the tools, hosted-search, or stop-string scenarios; it does not use a real model or external provider. Missing or inconclusive evidence stays yellow. A genuine comparison mismatch is red. No public ports are published, real credentials are used, or production/shared-development services contacted.
+```bash
+stack-review --dev-vm pierre@horn --dev-tests \
+    https://github.com/lyceum-tech/lyceum/pull/4292
+```
+
+This opt-in mode has a three-hour deadline. It initializes a throwaway Git repository from the exact candidate archive, builds the development image using that archive's `mise.toml` and lockfile, then runs pre-commit, `//...:lint`, `//...:test-fast`, and `//...:test-integration`. Every group is attempted. Pre-commit edits are discarded before the subsequent groups. Rule 3 reports any failed groups by name; raw candidate output is not forwarded over SSH. A red group is a check result, while an inability to build or execute the runtime remains an operational failure.
+
+The development checks share the runtime host's Docker socket and network for testcontainers, so they require the same dedicated trusted-host precautions as the direct development wrapper. The review runtime deliberately does not mount `LYCEUM_DEV_GNUPG` or otherwise provide personal credentials to candidate code. Consequently SOPS-dependent hooks and Terraform lint fail until the dedicated runtime host has an independently managed, review-appropriate decryption key. Do not copy a personal keyring to a host used for untrusted pull requests. For local trusted development only, the direct wrapper in `vm/lyceum-dev` does support an explicitly selected keyring.
+
+The runtime probe exercises all four rule-9 chat scenarios: `plain`, `tools`, `search`, and `stop-string`. Each compares a non-streaming completion with a streamed completion through the candidate proxy to a deterministic fake OpenAI-compatible backend. Comparisons cover text, tool-call IDs and arguments, citation annotations, model identity, usage, finish reason, and normal SSE termination. Scenarios fail independently; an unsupported or malformed response is inconclusive, while a genuine complete/stream mismatch is red.
+
+Hosted search uses `web_search_options`, the proxy's internal search function, and an authenticated Linkup-compatible fixture. A per-run self-signed certificate maps `api.linkup.so` to that fixture on the internal-only network, with only its public certificate mounted read-only into the candidate. The search credential is synthetic and deleted with the run. No internet search, real model, or external provider is used. Successful rule-9 evidence is not a claim that the whole stack, production inference, or unrelated Execlet credential changes have passed.
+
+No public ports are published, real credentials are used, or production/shared-development services contacted. Missing or inconclusive evidence stays yellow.
 
 Runtime resources have unique Compose project names and a per-host run lock. Candidate builds do not receive the host Docker socket or production/shared-development credentials. Runtime containers are non-root, read-only, drop Linux capabilities, and share an internal-only network with the fake control plane and Redis. Every response is size- and time-bounded. Raw prompts, provider responses, and synthetic credentials are not included in observations. The collector emits only allowed comparison facts bound to the complete base SHA, head SHA, and policy SHA.
 

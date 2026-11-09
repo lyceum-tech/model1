@@ -2,5 +2,8 @@ FROM python:3.12-alpine@sha256:e064671ca452259bab50e8e2c7bd896e39e9a343bb06ca252
 
 WORKDIR /opt/stack-review
 COPY __init__.py fake_backend.py probe.py runtime_assets/
-RUN adduser -D -H -u 10001 reviewer
+RUN apk add --no-cache openssl \
+    && adduser -D -H -u 10001 reviewer \
+    && mkdir /certificates \
+    && chown reviewer:reviewer /certificates
 USER reviewer

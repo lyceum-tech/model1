@@ -22,7 +22,10 @@ if args[:1] == ["compose"]:
     if action == "exec":
         if os.environ.get("REVIEW_TEST_FAIL") == "exec":
             sys.exit(1)
-        print(json.dumps({"scenario": "plain", "comparisons": {"text": True, "model": True, "usage": True, "finish_reason": True}}))
+        print(json.dumps([
+            {"scenario": scenario, "comparisons": {"text": True, "model": True, "usage": True, "finish_reason": True}}
+            for scenario in ("plain", "tools", "search", "stop-string")
+        ]))
     elif action == "images":
         print("a" * 64)
     elif action == os.environ.get("REVIEW_TEST_FAIL", "") or (
@@ -148,24 +151,92 @@ class LifecycleTest(GitFixture):
 
 
 class EvidenceTest(unittest.TestCase):
+    def valid(self):
+        return [
+            {"scenario": scenario, "comparisons": {"text": True, "model": True, "usage": True, "finish_reason": True}}
+            for scenario in ("plain", "tools", "search", "stop-string")
+        ]
+
     def test_malformed_probe_output_is_rejected(self):
-        for output in (
-            "[]",
-            '{"scenario":"plain","raw":"secret response"}',
-            '{"scenario":"plain","comparisons":{"text":"yes"}}',
-            "x" * (runtime_agent.MAX_PROBE_BYTES + 1),
-        ):
-            with self.subTest(output=output[:40]), patch.object(runtime_agent, "checked", return_value=output):
-                with self.assertRaises((ValueError, RuntimeError, KeyError, json.JSONDecodeError)):
+        duplicate = self.valid()
+        duplicate[1]["scenario"] = "plain"
+        non_boolean = self.valid()
+        non_boolean[1]["comparisons"]["text"] = "yes"
+        non_object = self.valid()
+        non_object[1]["comparisons"] = None
+        unexpected_field = self.valid()
+        unexpected_field[1]["raw"] = "secret response"
+        missing_field = self.valid()
+        del missing_field[1]["comparisons"]["usage"]
+        unexpected_scenario = self.valid()
+        unexpected_scenario[1]["scenario"] = "unexpected"
+        cases = [
+            [], {}, self.valid()[:-1], duplicate, non_boolean, non_object, unexpected_field, missing_field,
+            unexpected_scenario,
+        ]
+        for output in [*(json.dumps(case) for case in cases), "x" * (runtime_agent.MAX_PROBE_BYTES + 1)]:
+            with self.subTest(output=output[:80]), patch.object(runtime_agent, "checked", return_value=output):
+                with self.assertRaises((ValueError, RuntimeError, KeyError, TypeError, json.JSONDecodeError)):
                     runtime_agent.comparison_fact("stack-review", os.environ.copy())
 
     def test_anonymous_http_error_remains_inconclusive(self):
-        with patch.object(
-            runtime_agent, "checked", return_value='{"scenario":"plain","error":"response-contract-inconclusive"}'
+        expected = self.valid()
+        expected[1] = {"scenario": "tools", "error": "response-contract-inconclusive"}
+        with patch.object(runtime_agent, "checked", return_value=json.dumps(expected)) as execute:
+            facts = runtime_agent.comparison_fact("stack-review", os.environ.copy())
+        self.assertEqual(facts, expected)
+        self.assertEqual(execute.call_args.args[0][-1], "--all")
+        self.assertNotIn("Bearer", json.dumps(facts))
+
+
+class DevelopmentCheckTest(GitFixture):
+    def test_real_git_snapshot_is_reset_after_precommit_and_checks_all_groups(self):
+        source = Path(self.directory.name) / "candidate"
+        source.mkdir()
+        (source / "mise.toml").write_text("")
+        (source / "go.mod").write_text("original\n")
+        runner = Path(self.directory.name) / "dev"
+        log = Path(self.directory.name) / "dev-checks.json"
+        runner.write_text(
+            """#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import sys
+source = pathlib.Path(os.environ["LYCEUM_DEV_REPO"])
+with open(os.environ["REVIEW_DEV_LOG"], "a") as stream:
+    stream.write(json.dumps({"command": sys.argv[1], "repo": str(source), "has_gpg": "LYCEUM_DEV_GNUPG" in os.environ}) + "\\n")
+if sys.argv[1] == "pre-commit":
+    (source / "go.mod").write_text("modified\\n")
+    (source / "untracked").write_text("discard me\\n")
+    sys.exit(1)
+if sys.argv[1] not in ("build", "pre-commit"):
+    if (source / "go.mod").read_text() != "original\\n" or (source / "untracked").exists():
+        sys.exit(2)
+"""
+        )
+        runner.chmod(0o755)
+        with (
+            patch.object(runtime_agent, "DEV_RUNNER", runner),
+            patch.dict(os.environ, {"REVIEW_DEV_LOG": str(log), "LYCEUM_DEV_GNUPG": "/must-not-be-shared"}),
         ):
-            fact = runtime_agent.comparison_fact("stack-review", os.environ.copy())
-        self.assertNotIn("response", fact.get("text", ""))
-        self.assertNotIn("Bearer", json.dumps(fact))
+            facts = runtime_agent.development_check_facts(source, os.environ.copy())
+        self.assertEqual(
+            facts,
+            {
+                "checks": [
+                    {"name": "pre-commit", "status": "failed"},
+                    {"name": "lint", "status": "passed"},
+                    {"name": "test-fast", "status": "passed"},
+                    {"name": "integration", "status": "passed"},
+                ]
+            },
+        )
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual([call["command"] for call in calls], ["build", "pre-commit", "lint", "test", "integration"])
+        self.assertTrue(all(call["repo"] == str(source) and not call["has_gpg"] for call in calls))
+        self.assertEqual((source / "go.mod").read_text(), "original\n")
+        self.assertFalse((source / "untracked").exists())
 
 
 class ArchiveTest(GitFixture):

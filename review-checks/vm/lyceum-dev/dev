@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+export LYCEUM_DEV_REPO=${LYCEUM_DEV_REPO:-${script_dir}/../../../lyceum}
+exec "${script_dir}/../../src/runtime_assets/lyceum_dev/dev" "$@"

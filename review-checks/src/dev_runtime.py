@@ -25,7 +25,7 @@ def validate_host(value):
     return value
 
 
-def validate_observations(data, base, head, policy):
+def validate_observations(data, base, head, policy, tests=False):
     if not isinstance(data, dict) or set(data) != {"base", "head", "policy_sha256", "runtime", "rules"}:
         raise ValueError("Remote runtime returned malformed observations")
     if not COMMIT.fullmatch(base) or not COMMIT.fullmatch(head) or not re.fullmatch(r"[0-9a-f]{64}", policy):
@@ -34,22 +34,49 @@ def validate_observations(data, base, head, policy):
         raise ValueError("Remote runtime is not bound to the requested candidates and policy")
     if data["runtime"] != {"candidate_revision_verified": True, "backend": "fake-openai-compatible"}:
         raise ValueError("Remote runtime did not verify its candidate image")
-    if not isinstance(data["rules"], dict):
+    expected_rules = {"9", "3"} if tests else {"9"}
+    if not isinstance(data["rules"], dict) or set(data["rules"]) != expected_rules:
         raise ValueError("Remote runtime returned malformed rules")
+    if tests:
+        expected = [
+            {"name": name, "status": status}
+            for name in ("pre-commit", "lint", "test-fast", "integration")
+            for status in ("passed", "failed")
+        ]
+        checks = data["rules"]["3"]
+        if (
+            not isinstance(checks, dict)
+            or set(checks) != {"checks"}
+            or not isinstance(checks["checks"], list)
+            or len(checks["checks"]) != 4
+            or any(not isinstance(check, dict) or check not in expected for check in checks["checks"])
+            or {check["name"] for check in checks["checks"]} != {check["name"] for check in expected}
+        ):
+            raise ValueError("Remote runtime returned malformed check results")
     encoded = json.dumps(data, separators=(",", ":")).encode()
     if len(encoded) > MAX_OBSERVATION_BYTES:
         raise ValueError("Remote runtime observations exceed their size limit")
     return data
 
 
-def collect(host, base, head, policy, timeout=2100):
+def collect(host, base, head, policy, *, tests=False, timeout=None):
     validate_host(host)
-    if not isinstance(timeout, int) or isinstance(timeout, bool) or not 60 <= timeout <= 3600:
+    if not isinstance(tests, bool):
+        raise ValueError("Runtime test selection is invalid")
+    if timeout is None:
+        timeout = 10800 if tests else 2100
+    maximum = 14400 if tests else 3600
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or not 60 <= timeout <= maximum:
         raise ValueError("Runtime timeout is outside its permitted range")
     command = (
-        f"exec timeout --signal=TERM --kill-after=30s {timeout}s stack-review-runtime "
+        "runtime=stack-review-runtime; "
+        "if [ -x \"$HOME/.local/bin/stack-review-runtime\" ]; then "
+        "runtime=\"$HOME/.local/bin/stack-review-runtime\"; fi; "
+        f"exec timeout --signal=TERM --kill-after=30s {timeout}s \"$runtime\" "
         f"--base {shlex.quote(base)} --head {shlex.quote(head)}"
     )
+    if tests:
+        command += " --dev-tests"
     environment = os.environ.copy()
     environment["LC_ALL"] = "C.UTF-8"
     result = subprocess.run(
@@ -82,4 +109,4 @@ def collect(host, base, head, policy, timeout=2100):
         raise ValueError(f"Remote candidate test failed{detail}; check SSH, gh, Docker, installation, and cleanup logs")
     if len(result.stdout.encode()) > MAX_OBSERVATION_BYTES:
         raise ValueError("Remote runtime observations exceed their size limit")
-    return validate_observations(json.loads(result.stdout), base, head, policy)
+    return validate_observations(json.loads(result.stdout), base, head, policy, tests=tests)

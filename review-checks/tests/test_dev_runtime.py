@@ -60,8 +60,34 @@ class DevRuntimeTest(unittest.TestCase):
         self.assertIn("--", command)
         self.assertNotIn("StrictHostKeyChecking", command)
         self.assertIn(str(HEAD), command[-1])
+        self.assertIn("$HOME/.local/bin/stack-review-runtime", command[-1])
+        self.assertIn("runtime=stack-review-runtime", command[-1])
         self.assertNotIn("--token", command[-1])
         self.assertEqual(execute.call_args.kwargs["timeout"], 2145)
+
+    def test_full_check_results_use_the_extended_deadline_and_strict_schema(self):
+        results = observations(
+            rules={
+                "9": observations()["rules"]["9"],
+                "3": {
+                    "checks": [
+                        {"name": name, "status": "passed"}
+                        for name in ("pre-commit", "lint", "test-fast", "integration")
+                    ]
+                },
+            }
+        )
+        with patch.object(subprocess, "run", return_value=self.query(stdout=json.dumps(results))) as execute:
+            self.assertEqual(dev_runtime.collect("pierre@horn", BASE, HEAD, POLICY, tests=True), results)
+        command = execute.call_args.args[0][-1]
+        self.assertIn("--dev-tests", command)
+        self.assertEqual(execute.call_args.kwargs["timeout"], 10845)
+        for invalid in (observations(), {**results, "rules": {**results["rules"], "3": {"raw": "secret"}}}):
+            with self.subTest(invalid=invalid), patch.object(
+                subprocess, "run", return_value=self.query(stdout=json.dumps(invalid))
+            ):
+                with self.assertRaises(ValueError):
+                    dev_runtime.collect("pierre@horn", BASE, HEAD, POLICY, tests=True)
 
     def test_bad_commit_binding_or_unexpected_backend_is_rejected(self):
         cases = (

@@ -45,6 +45,8 @@ services:
         }}}
       CHAT_TIMEOUT_S: "45"
       READ_TIMEOUT_S: "60"
+      LINKUP_API_KEY: ${LINKUP_API_KEY}
+      SSL_CERT_FILE: /certificates/linkup.crt
     depends_on:
       fixture:
         condition: service_healthy
@@ -54,6 +56,8 @@ services:
       runtime:
         aliases:
           - inference-proxy
+    volumes:
+      - certificates:/certificates:ro
     expose:
       - "8080"
 
@@ -74,11 +78,15 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+    volumes:
+      - certificates:/certificates
     networks:
       runtime:
         aliases:
           - ${DEPLOYMENT_ID}.internal
+          - api.linkup.so
     expose:
+      - "443"
       - "8000"
       - "8080"
 
@@ -104,4 +112,5 @@ networks:
     internal: true
 
 volumes:
+  certificates:
   redis-data:

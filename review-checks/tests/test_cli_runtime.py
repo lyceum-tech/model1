@@ -17,7 +17,7 @@ class CommandTest(GitFixture):
         self.write("app/src/example.py", "# candidate\n")
         self.head = self.commit()
 
-    def evaluate(self, json_mode=False):
+    def evaluate(self, json_mode=False, tests=False):
         pr = {
             "state": "open",
             "title": "Runtime fixture",
@@ -38,6 +38,8 @@ class CommandTest(GitFixture):
         ]
         if json_mode:
             arguments.insert(-1, "--json")
+        if tests:
+            arguments.insert(-1, "--dev-tests")
         output = io.StringIO()
         with (
             patch.object(sys, "argv", arguments),
@@ -47,7 +49,9 @@ class CommandTest(GitFixture):
             patch("dev_runtime.collect", return_value=observations_by_candidate) as collect,
         ):
             self.assertEqual(review_report.main(), 0)
-        collect.assert_called_once_with("pierre@horn", self.base, self.head, review_report.policy_digest())
+        collect.assert_called_once_with(
+            "pierre@horn", self.base, self.head, review_report.policy_digest(), tests=tests
+        )
         self.assertEqual(cache.call_args.args[0], "lyceum-tech/lyceum")
         return output.getvalue()
 
@@ -65,6 +69,9 @@ class CommandTest(GitFixture):
         self.assertEqual(len(result["rules"]), 17)
         self.assertEqual(result["rules"][8]["status"], "yellow")
         self.assertIn("missing scenarios", result["rules"][8]["reason"])
+
+    def test_full_development_checks_are_opt_in(self):
+        self.evaluate(tests=True)
 
 
 if __name__ == "__main__":

@@ -215,8 +215,8 @@ def reference_check(before: Snapshot, candidate: Snapshot) -> dict:
     }
 
 
-def validation_coverage_check(candidate: Snapshot) -> dict:
-    """Verify declared validation task bindings and CI calls; do not claim runtime success."""
+def validation_coverage_check(candidate: Snapshot, observations=None) -> dict:
+    """Verify validation wiring and any trusted container check results."""
     findings = []
     try:
         inventory = policy()["validation"]
@@ -266,9 +266,44 @@ def validation_coverage_check(candidate: Snapshot) -> dict:
             "status": "incomplete",
             "reason": "Could not inspect validation configuration",
         }
+    reason = "Required validation tasks, CI calls, and environments checked; runtime results are separate"
+    if observations is not None:
+        expected = {"pre-commit", "lint", "test-fast", "integration"}
+        checks = observations.get("checks") if isinstance(observations, dict) and set(observations) == {"checks"} else None
+        if (
+            not isinstance(checks, list)
+            or len(checks) != len(expected)
+            or any(
+                not isinstance(check, dict)
+                or set(check) != {"name", "status"}
+                or check["name"] not in expected
+                or check["status"] not in ("passed", "failed")
+                for check in checks
+            )
+            or {check["name"] for check in checks} != expected
+        ):
+            return {
+                "id": "validation-coverage",
+                "status": "incomplete",
+                "reason": "Container check observations were malformed",
+                "findings": findings,
+            }
+        for check in checks:
+            if check["status"] == "failed":
+                findings.append({"rule": "CI-3", "kind": "runtime-check-failed", "check": check["name"]})
+        failed = ", ".join(sorted(check["name"] for check in checks if check["status"] == "failed"))
+        reason = (
+            f"Container checks failed: {failed}" if failed else "All Lyceum container check groups passed on the exact candidate archive"
+        )
     return {
         "id": "validation-coverage",
-        "status": ("failed" if any(f["rule"] == "CI-1" for f in findings) else "incomplete" if findings else "passed"),
-        "reason": "Required validation tasks, CI calls, and environments checked; runtime results are separate",
+        "status": (
+            "failed"
+            if any(f["rule"] in ("CI-1", "CI-3") for f in findings)
+            else "incomplete"
+            if findings
+            else "passed"
+        ),
+        "reason": reason,
         "findings": findings,
     }

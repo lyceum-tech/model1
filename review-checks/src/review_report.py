@@ -60,7 +60,13 @@ def policy_digest() -> str:
         for name in ("dev_runtime.py", "review_report.py", "repository_checks.py", "gates.py", "runtime_agent.py")
     ]
     files.extend(sorted((root / "review_rules").glob("*.py")))
-    files.extend(sorted(path for path in (root / "runtime_assets").glob("*") if path.is_file()))
+    files.extend(
+        sorted(
+            path
+            for path in (root / "runtime_assets").rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        )
+    )
     files.append(root / "review_rules" / "policy.json")
     digest = hashlib.sha256()
     for path in files:
@@ -87,7 +93,7 @@ def assess(repo: Path, base: str, head: str, observations: dict | None = None) -
                 check = (
                     lambda: configuration_check(after),
                     lambda: reference_check(before, after),
-                    lambda: validation_coverage_check(after),
+                    lambda: validation_coverage_check(after, evidence.get("3")),
                 )[number - 1]()
                 result = verdict({"passed": "green", "failed": "red"}.get(check["status"], "yellow"), check["reason"])
                 result["findings"] = check.get("findings", [])
@@ -222,11 +228,16 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="Print the complete report as JSON")
     parser.add_argument("--cache-dir", type=Path, help="Repository cache directory")
     parser.add_argument("--dev-vm", metavar="USER@HOST", help="Build and probe this PR on a Linux Docker host")
+    parser.add_argument(
+        "--dev-tests", action="store_true", help="Also run Lyceum's full check groups in its Docker development environment"
+    )
     args = parser.parse_args()
     try:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repository):
             raise ValueError("Invalid repository")
         repository, number = parse_target(args.target, args.repository)
+        if args.dev_tests and not args.dev_vm:
+            raise ValueError("--dev-tests requires --dev-vm")
         if args.dev_vm and (repository != "lyceum-tech/lyceum" or args.observations):
             raise ValueError("--dev-vm supports the Lyceum PR and remote observations only")
         pr = gh(f"repos/{repository}/pulls/{number}")
@@ -244,7 +255,7 @@ def main() -> int:
         if args.dev_vm:
             from dev_runtime import collect
 
-            observations = collect(args.dev_vm, base, head, policy_digest())
+            observations = collect(args.dev_vm, base, head, policy_digest(), tests=args.dev_tests)
         else:
             observations = json.loads(args.observations.read_text()) if args.observations else None
         report = assess(repo, base, head, observations)

@@ -22,4 +22,12 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 review_rules = ["policy.json"]
-runtime_assets = ["Dockerfile", "compose.yaml", "fake_backend.py", "probe.py"]
+runtime_assets = [
+    "Dockerfile",
+    "compose.yaml",
+    "fake_backend.py",
+    "probe.py",
+    "lyceum_dev/Dockerfile",
+    "lyceum_dev/compose.yaml",
+    "lyceum_dev/dev",
+]
