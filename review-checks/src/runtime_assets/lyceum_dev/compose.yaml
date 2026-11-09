@@ -1,0 +1,30 @@
+services:
+  dev:
+    build:
+      context: ${LYCEUM_DEV_REPO:?set LYCEUM_DEV_REPO}
+      dockerfile: ${LYCEUM_DEV_DOCKERFILE:?set LYCEUM_DEV_DOCKERFILE}
+      args:
+        UID: ${LYCEUM_DEV_UID:-1000}
+        GID: ${LYCEUM_DEV_GID:-1000}
+        DOCKER_GID: ${LYCEUM_DEV_DOCKER_GID:-124}
+    image: lyceum-dev:local
+    user: lyceum
+    working_dir: ${LYCEUM_DEV_REPO}
+    network_mode: host
+    init: true
+    stdin_open: true
+    tty: true
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      GO_TEST_INTEGRATION_PARALLEL: ${GO_TEST_INTEGRATION_PARALLEL:-8}
+      MISE_JOBS: ${MISE_JOBS:-4}
+      MISE_TRUSTED_CONFIG_PATHS: ${LYCEUM_DEV_REPO:-/lyceum}
+      SKIP: ${SKIP:-renovate-fix-config,teamcity-settings}
+      TERM: ${TERM:-xterm-256color}
+    volumes:
+      - ${LYCEUM_DEV_REPO:-../../../lyceum}:${LYCEUM_DEV_REPO:-/lyceum}
+      - home:/home/lyceum
+      - ${LYCEUM_DEV_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+
+volumes:
+  home:

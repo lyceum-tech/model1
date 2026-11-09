@@ -55,12 +55,22 @@ def scoped(paths: list[str], prefixes: tuple[str, ...]) -> bool | None:
 
 def policy_digest() -> str:
     root = Path(__file__).parent
-    files = [root / name for name in ("review_report.py", "repository_checks.py", "gates.py")]
+    files = [
+        root / name
+        for name in ("dev_runtime.py", "review_report.py", "repository_checks.py", "gates.py", "runtime_agent.py")
+    ]
     files.extend(sorted((root / "review_rules").glob("*.py")))
+    files.extend(
+        sorted(
+            path
+            for path in (root / "runtime_assets").rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        )
+    )
     files.append(root / "review_rules" / "policy.json")
     digest = hashlib.sha256()
     for path in files:
-        digest.update(path.name.encode() + b"\0" + path.read_bytes())
+        digest.update(str(path.relative_to(root)).encode() + b"\0" + path.read_bytes())
     return digest.hexdigest()
 
 
@@ -83,7 +93,7 @@ def assess(repo: Path, base: str, head: str, observations: dict | None = None) -
                 check = (
                     lambda: configuration_check(after),
                     lambda: reference_check(before, after),
-                    lambda: validation_coverage_check(after),
+                    lambda: validation_coverage_check(after, evidence.get("3")),
                 )[number - 1]()
                 result = verdict({"passed": "green", "failed": "red"}.get(check["status"], "yellow"), check["reason"])
                 result["findings"] = check.get("findings", [])
@@ -217,11 +227,19 @@ def main() -> int:
     parser.add_argument("--observations", type=Path, help="Trusted candidate/policy-bound observation JSON")
     parser.add_argument("--json", action="store_true", help="Print the complete report as JSON")
     parser.add_argument("--cache-dir", type=Path, help="Repository cache directory")
+    parser.add_argument("--dev-vm", metavar="USER@HOST", help="Build and probe this PR on a Linux Docker host")
+    parser.add_argument(
+        "--dev-tests", action="store_true", help="Also run Lyceum's full check groups in its Docker development environment"
+    )
     args = parser.parse_args()
     try:
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repository):
             raise ValueError("Invalid repository")
         repository, number = parse_target(args.target, args.repository)
+        if args.dev_tests and not args.dev_vm:
+            raise ValueError("--dev-tests requires --dev-vm")
+        if args.dev_vm and (repository != "lyceum-tech/lyceum" or args.observations):
+            raise ValueError("--dev-vm supports the Lyceum PR and remote observations only")
         pr = gh(f"repos/{repository}/pulls/{number}")
         if pr["state"] != "open":
             raise ValueError("The pull request is not open")
@@ -234,12 +252,15 @@ def main() -> int:
         else:
             cache = args.cache_dir or (Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "stack-review")
             repo = prepare_cache(repository, number, pr, cache)
-        observations = json.loads(args.observations.read_text()) if args.observations else None
+        if args.dev_vm:
+            from dev_runtime import collect
+
+            observations = collect(args.dev_vm, base, head, policy_digest(), tests=args.dev_tests)
+        else:
+            observations = json.loads(args.observations.read_text()) if args.observations else None
         report = assess(repo, base, head, observations)
-    except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError, subprocess.SubprocessError):
-        parser.exit(
-            1, "stack-review: could not evaluate the pull request; run with a valid URL and repository access\n"
-        )
+    except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError, subprocess.SubprocessError) as error:
+        parser.exit(1, f"stack-review: {error}\n")
     if args.json:
         print(json.dumps(report, indent=2))
     else:

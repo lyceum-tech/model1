@@ -176,6 +176,28 @@ class CoverageTest(GitFixture):
             self.write(".github/workflows/check.yml", self.workflow.replace("mise run '//...:lint'", replacement))
             self.assertEqual(self.check()["status"], "failed")
 
+    def test_container_results_cover_all_groups_and_report_failures(self):
+        results = {
+            "checks": [
+                {"name": name, "status": "passed"} for name in ("pre-commit", "lint", "test-fast", "integration")
+            ]
+        }
+        passed = checks.validation_coverage_check(checks.Snapshot(self.repo, self.commit()), results)
+        self.assertEqual(passed["status"], "passed")
+        self.assertIn("All Lyceum container check groups passed", passed["reason"])
+        results["checks"][1]["status"] = "failed"
+        failed = checks.validation_coverage_check(checks.Snapshot(self.repo, "HEAD"), results)
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["findings"], [{"rule": "CI-3", "kind": "runtime-check-failed", "check": "lint"}])
+
+    def test_malformed_or_incomplete_container_results_cannot_pass(self):
+        revision = self.commit()
+        for results in (None, {"checks": []}, {"checks": [{"name": "lint", "status": "ok"}]}):
+            with self.subTest(results=results):
+                observations = {"unexpected": True} if results is None else results
+                result = checks.validation_coverage_check(checks.Snapshot(self.repo, revision), observations)
+                self.assertEqual(result["status"], "incomplete")
+
 
 if __name__ == "__main__":
     unittest.main()

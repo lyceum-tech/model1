@@ -1,6 +1,6 @@
 # Stack review
 
-`stack-review` runs the 17 advisory checks from Lyceum stack 4515 against one GitHub pull request. It is a local, read-only replacement for the per-rule PR stack: it does not publish PR comments or descriptions, execute candidate code, or contribute to branch protection.
+`stack-review` runs the 17 advisory checks from Lyceum stack 4515 against one GitHub pull request. Without `--dev-vm`, it is a local, read-only replacement for the per-rule PR stack: it does not publish PR comments or descriptions, execute candidate code, or contribute to branch protection.
 
 ## Install
 
@@ -27,48 +27,88 @@ Use `--json` for the complete report and `--cache-dir` to override the default c
 
 Checks 4–17 require runtime observations for changed code in their declared scope. Without complete candidate-, base-, and policy-bound observations they intentionally remain yellow. Supply trusted observations with `--observations observations.json`; files from the candidate cannot alter that binding. Inspect `stack_review` policy and each rule's required scenario names before collecting observations.
 
-## Prepare a Linux Docker host
+## Develop Lyceum in Docker
 
-Use a dedicated Ubuntu 24.04 or Debian host for untrusted candidate builds. Do not use shared development,
-staging, or production infrastructure: membership in the Docker group grants effective host root access.
-The bootstrap can use an existing Docker daemon, or install Docker and Compose v2 when they are absent.
-
-Run the script as root and select both the Linux runtime account and the GitHub identity it already owns.
-Use the `pierre/review-cli-existing-user` branch until this change is merged; after that, omit `--branch`.
-For example, `pierre` is the Linux account whose `gh` login uses pierrot-la-lune:
+Use the Linux development container to run Lyceum's complete lint and test task groups against the sibling `../lyceum` checkout:
 
 ```bash
-sudo ./review-checks/vm/bootstrap.sh \
-    --branch pierre/review-cli-existing-user \
+./review-checks/vm/lyceum-dev/dev build
+./review-checks/vm/lyceum-dev/dev shell
+./review-checks/vm/lyceum-dev/dev check
+```
+
+The checkout remains editable on the host, and the container runs as the host user. Integration tests share the host Docker socket and network, so use this only on a dedicated development machine with code you trust. See `review-checks/vm/lyceum-dev/README.md` for individual commands, cache handling, and credential requirements.
+
+## Build and probe on a Linux Docker host
+
+After bootstrapping a host with the runtime support described below, run this from your normal workstation:
+
+```bash
+stack-review --dev-vm pierre@horn https://github.com/lyceum-tech/lyceum/pull/4292
+```
+
+The workstation reads the PR metadata from GitHub and evaluates static checks from an immutable Git snapshot. The independently authenticated host clones Lyceum, archives the exact `head.sha`, builds the candidate `inference-proxy`, and verifies the resulting image's trusted revision label. `--repo` and `--cache-dir` affect only the local static snapshot, never the remote candidate. `--observations` cannot be combined with `--dev-vm`.
+
+Add `--dev-tests` to run the complete Lyceum check suite in the development container after the runtime probe:
+
+```bash
+stack-review --dev-vm pierre@horn --dev-tests \
+    https://github.com/lyceum-tech/lyceum/pull/4292
+```
+
+This opt-in mode has a three-hour deadline. It initializes a throwaway Git repository from the exact candidate archive, builds the development image using that archive's `mise.toml` and lockfile, then runs pre-commit, `//...:lint`, `//...:test-fast`, and `//...:test-integration`. Every group is attempted. Pre-commit edits are discarded before the subsequent groups. Rule 3 reports any failed groups by name; raw candidate output is not forwarded over SSH. A red group is a check result, while an inability to build or execute the runtime remains an operational failure.
+
+The development checks share the runtime host's Docker socket and network for testcontainers, so they require the same dedicated trusted-host precautions as the direct development wrapper. The review runtime deliberately does not mount `LYCEUM_DEV_GNUPG` or otherwise provide personal credentials to candidate code. Consequently SOPS-dependent hooks and Terraform lint fail until the dedicated runtime host has an independently managed, review-appropriate decryption key. Do not copy a personal keyring to a host used for untrusted pull requests. For local trusted development only, the direct wrapper in `vm/lyceum-dev` does support an explicitly selected keyring.
+
+The runtime probe exercises all four rule-9 chat scenarios: `plain`, `tools`, `search`, and `stop-string`. Each compares a non-streaming completion with a streamed completion through the candidate proxy to a deterministic fake OpenAI-compatible backend. Comparisons cover text, tool-call IDs and arguments, citation annotations, model identity, usage, finish reason, and normal SSE termination. Scenarios fail independently; an unsupported or malformed response is inconclusive, while a genuine complete/stream mismatch is red.
+
+Hosted search uses `web_search_options`, the proxy's internal search function, and an authenticated Linkup-compatible fixture. A per-run self-signed certificate maps `api.linkup.so` to that fixture on the internal-only network, with only its public certificate mounted read-only into the candidate. The search credential is synthetic and deleted with the run. No internet search, real model, or external provider is used. Successful rule-9 evidence is not a claim that the whole stack, production inference, or unrelated Execlet credential changes have passed.
+
+No public ports are published, real credentials are used, or production/shared-development services contacted. Missing or inconclusive evidence stays yellow.
+
+Runtime resources have unique Compose project names and a per-host run lock. Candidate builds do not receive the host Docker socket or production/shared-development credentials. Runtime containers are non-root, read-only, drop Linux capabilities, and share an internal-only network with the fake control plane and Redis. Every response is size- and time-bounded. Raw prompts, provider responses, and synthetic credentials are not included in observations. The collector emits only allowed comparison facts bound to the complete base SHA, head SHA, and policy SHA.
+
+Cleanup always attempts `docker compose down --volumes --remove-orphans`, including after build, startup, probe, or timeout failures. Cached images are retained. Cleanup failure is an operational failure rather than a successful observation. The host agent also has a hard timeout; the local SSH command is batch-only and uses the existing SSH configuration and known hosts.
+
+## Prepare a Linux Docker host
+
+Use a dedicated Ubuntu 24.04 or Debian host for untrusted candidate builds. Do not use shared development, staging, or production infrastructure: membership in the Docker group grants effective host root access. The bootstrap can use an existing Docker daemon, or install Docker and Compose v2 when absent. Compose requires Buildx 0.17 or newer; the bootstrap installs the checksum-verified upstream Buildx 0.30.1 plugin when the distribution version is older. Installer downloads need space on the root filesystem (including `/tmp`), while the Docker data root needs enough space for candidate images and build cache.
+
+Run the script as root, selecting the Linux account and the GitHub identity it owns. With the runtime change installed on model1 `main`, update an existing `pierre` installation whose `gh` login is pierrot-la-lune:
+
+```bash
+sudo /opt/lyceum-stack-review/review-checks/vm/bootstrap.sh \
     --runtime-user pierre \
     --github-user pierrot-la-lune
 ```
 
-The script is idempotent. It reuses the selected Linux account and its home directory, creates `.stack-review/runs`
-and `.stack-review/cache` there, clones model1 into `/opt/lyceum-stack-review`, and installs Python dependencies
-into `.stack-review/venv`. `/usr/local/bin/stack-review` uses that installation. The default `--runtime-user` is
-`stackreview`, which the script can create for a separate runtime; another account specified explicitly must
-already exist. Docker membership grants effective host root access, so use only a dedicated disposable host.
+For a new checkout, run `sudo ./review-checks/vm/bootstrap.sh` with the same options instead. `--branch NAME` is available when testing another trusted model1 revision. The remote agent must use the same runtime policy revision as the workstation; a policy mismatch is rejected rather than producing a stale report.
 
-The existing account keeps its normal home-based `gh` configuration. If `gh` has the requested GitHub identity,
-the script selects it with `gh auth switch`; a `pierre` account already authenticated as pierrot-la-lune needs
-no new login. Otherwise complete `gh auth login --web` as that GitHub user. For headless hosts, the script prints
-the browser URL rather than requiring `xdg-open`. No personal access token is passed to the bootstrap, and the
-identity is checked with `gh api user`.
+The script is idempotent. It creates `.stack-review/runs` and `.stack-review/cache` in the selected account's home, clones model1 into `/opt/lyceum-stack-review`, and installs Python dependencies into `.stack-review/venv`. `/usr/local/bin/stack-review` and `/usr/local/bin/stack-review-runtime` use that installation. The default `--runtime-user` is `stackreview`, which the script can create; another explicitly selected account must already exist.
 
-To add SSH access to a different account, pass `--ssh-public-key FILE.pub`. The script appends a missing public
-key without replacing existing `authorized_keys`; never supply a private key. With the example above, connect as
-the existing account:
+The existing account keeps its normal home-based `gh` configuration. If `gh` has the requested GitHub identity, the script selects it with `gh auth switch`; a `pierre` account already authenticated as pierrot-la-lune needs no new login. Otherwise complete `gh auth login --web` as that GitHub user. For headless hosts, the script prints the browser URL instead of requiring `xdg-open`. No personal access token is used; the identity is checked with `gh api user`.
+
+To authorize SSH access, append your public key once:
 
 ```bash
-ssh pierre@HOST stack-review --help
+sudo /opt/lyceum-stack-review/review-checks/vm/bootstrap.sh \
+    --runtime-user pierre \
+    --github-user pierrot-la-lune \
+    --ssh-public-key /tmp/stack-review.pub
 ```
 
-Host preparation is separate from creating and testing an isolated per-PR Compose environment. The bootstrap
-does not expose an HTTP service, copy candidate secrets to the host, or run candidate code by itself.
+The script appends a missing public key without replacing existing `authorized_keys`; never supply a private key. Then verify the intended OS account:
+
+```bash
+ssh pierre@horn stack-review-runtime --help
+```
+
+Bootstrapping alone does not expose an HTTP service, copy candidate secrets, or run candidate code.
 
 ## Validate this project
 
 ```bash
 uv run --project review-checks python -m unittest discover -s review-checks/tests -v
 ```
+
+The unit and lifecycle tests use local HTTP servers and a fake Docker executable; they do not require a Docker daemon. Compose syntax is checked separately by `docker compose config`. A real candidate build still requires an authorized Linux Docker host.

@@ -8,6 +8,15 @@ REQUIRED = ("plain", "tools", "search", "stop-string")
 
 def evaluate_one(f):
     fields = ("text", "model", "usage", "finish_reason")
+    if "comparisons" in f:
+        comparisons = f["comparisons"]
+        if (
+            not isinstance(comparisons, dict)
+            or set(comparisons) != set(fields)
+            or any(type(comparisons.get(field)) is not bool for field in fields)
+        ):
+            return None
+        return all(comparisons.values())
     return all(f["assembled_stream"][key] == f["complete_response"][key] for key in fields)
 
 

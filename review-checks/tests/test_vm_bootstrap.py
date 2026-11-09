@@ -33,6 +33,17 @@ class BootstrapTest(unittest.TestCase):
         self.assertNotIn("--with-token", script)
         self.assertNotIn("github_token", script)
 
+    def test_buildx_is_checksum_verified_for_the_runtime_user(self):
+        script = BOOTSTRAP.read_text()
+        self.assertIn("readonly BUILDX_VERSION=0.30.1", script)
+        self.assertIn("docker buildx version", script)
+        self.assertIn("dpkg --compare-versions", script)
+        self.assertIn('sub(/^\\*/, "", name)', script)
+        self.assertIn("as_runtime_user curl", script)
+        self.assertIn("as_runtime_user sha256sum", script)
+        self.assertIn("as_runtime_user docker buildx version", script)
+        self.assertIn("/usr/local/lib/docker/cli-plugins/docker-buildx", script)
+
     def test_public_keys_are_appended_without_replacing_existing_ones(self):
         script = BOOTSTRAP.read_text()
         self.assertIn('grep -Fqx -f "$ssh_public_key" "$authorized_keys"', script)

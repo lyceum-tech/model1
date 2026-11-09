@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+LYCEUM_DEV_REPO=$(realpath -e "${LYCEUM_DEV_REPO:?set LYCEUM_DEV_REPO to a Lyceum checkout}")
+LYCEUM_DEV_DOCKERFILE=${LYCEUM_DEV_DOCKERFILE:-${script_dir}/Dockerfile}
+LYCEUM_DEV_UID=$(id -u)
+LYCEUM_DEV_GID=$(id -g)
+LYCEUM_DEV_DOCKER_SOCKET=${LYCEUM_DEV_DOCKER_SOCKET:-/var/run/docker.sock}
+COMPOSE_PROJECT_NAME=lyceum-dev-${LYCEUM_DEV_UID}
+export LYCEUM_DEV_REPO LYCEUM_DEV_DOCKERFILE LYCEUM_DEV_UID LYCEUM_DEV_GID
+export LYCEUM_DEV_DOCKER_SOCKET COMPOSE_PROJECT_NAME
+
+usage() {
+    cat <<'EOF'
+Usage: dev [COMMAND] [ARGUMENTS...]
+
+Commands:
+  build                    Build or refresh the development image
+  shell                    Open a shell in the Lyceum checkout (default)
+  exec COMMAND [ARGS...]   Run a command in a fresh development container
+  pre-commit               Run pre-commit hooks on all files
+  pre-commit-range B H     Run pre-commit and commit-msg hooks for base B..head H
+  lint                     Run all //...:lint tasks
+  test                     Run all //...:test-fast tasks
+  integration              Run all //...:test-integration tasks
+  check                    Run pre-commit, lint, test, and integration checks
+  compose [ARGS...]        Run docker compose for this development environment
+
+Set LYCEUM_DEV_REPO to use a different Lyceum checkout. The checkout must be on
+the same Linux machine as the Docker daemon at LYCEUM_DEV_DOCKER_SOCKET.
+EOF
+}
+
+fail() {
+    echo "lyceum-dev: $*" >&2
+    exit 1
+}
+
+[[ $(uname -s) == Linux ]] || fail "the shared Docker socket and host network require Linux"
+((LYCEUM_DEV_UID != 0)) || fail "run as a non-root host user"
+[[ -f "$LYCEUM_DEV_REPO/mise.toml" && -d "$LYCEUM_DEV_REPO/.git" ]] ||
+    fail "LYCEUM_DEV_REPO is not a Lyceum Git checkout: $LYCEUM_DEV_REPO"
+[[ -S "$LYCEUM_DEV_DOCKER_SOCKET" ]] || fail "Docker socket not found: $LYCEUM_DEV_DOCKER_SOCKET"
+command -v docker >/dev/null || fail "docker is required"
+docker info >/dev/null 2>&1 || fail "the Docker daemon is not accessible"
+
+LYCEUM_DEV_DOCKER_GID=$(stat -c '%g' "$LYCEUM_DEV_DOCKER_SOCKET")
+export LYCEUM_DEV_DOCKER_GID
+compose=(docker compose --project-directory "$script_dir" --file "$script_dir/compose.yaml")
+run=( "${compose[@]}" run --rm --build --quiet-build )
+if [[ -n "${LYCEUM_DEV_GNUPG:-}" ]]; then
+    gnupg_dir=$(realpath -e "$LYCEUM_DEV_GNUPG")
+    [[ -d "$gnupg_dir" ]] || fail "LYCEUM_DEV_GNUPG is not a directory: $gnupg_dir"
+    run+=(--volume "${gnupg_dir}:/home/lyceum/.gnupg")
+fi
+run+=(dev)
+
+case "${1:-shell}" in
+    -h|--help|help)
+        usage
+        ;;
+    build)
+        shift
+        (($# == 0)) || fail "build takes no arguments"
+        "${compose[@]}" build dev
+        ;;
+    shell)
+        shift
+        (($# == 0)) || fail "use exec to run a command"
+        "${run[@]}"
+        ;;
+    exec)
+        shift
+        (($# > 0)) || fail "exec requires a command"
+        "${run[@]}" "$@"
+        ;;
+    pre-commit)
+        shift
+        (($# == 0)) || fail "pre-commit takes no arguments"
+        "${run[@]}" mise exec -- pre-commit run --all-files --hook-stage pre-commit
+        ;;
+    pre-commit-range)
+        shift
+        (($# == 2)) || fail "pre-commit-range requires base and head revisions"
+        "${run[@]}" mise run //mise:pre-commit-range "$@"
+        ;;
+    lint|test|integration)
+        command_name=$1
+        shift
+        (($# == 0)) || fail "$command_name takes no arguments"
+        case "$command_name" in
+            lint) task=lint ;;
+            test) task=test-fast ;;
+            integration) task=test-integration ;;
+        esac
+        "${run[@]}" mise run --continue-on-error '//...:'"$task"
+        ;;
+    check)
+        shift
+        (($# == 0)) || fail "check takes no arguments"
+        # shellcheck disable=SC2016
+        "${run[@]}" bash -lc '
+            set -uo pipefail
+            status=0
+            mise exec -- pre-commit run --all-files --hook-stage pre-commit || status=1
+            mise run --continue-on-error "//...:lint" || status=1
+            mise run --continue-on-error "//...:test-fast" || status=1
+            mise run --continue-on-error "//...:test-integration" || status=1
+            exit "$status"
+        '
+        ;;
+    compose)
+        shift
+        "${compose[@]}" "$@"
+        ;;
+    *)
+        fail "unknown command: $1 (use --help)"
+        ;;
+esac
