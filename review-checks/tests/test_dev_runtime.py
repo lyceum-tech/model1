@@ -18,12 +18,16 @@ def observations(**changes):
         "policy_sha256": POLICY,
         "runtime": {"candidate_revision_verified": True, "backend": "fake-openai-compatible"},
         "rules": {
+            "4": [{"scenario": "sdk", "error": "response-contract-inconclusive"}],
+            "5": [{"scenario": "absent", "error": "response-contract-inconclusive"}],
+            "7": [{"scenario": "parse-error", "error": "response-contract-inconclusive"}],
             "9": [
                 {
                     "scenario": "plain",
                     "comparisons": {"text": True, "model": True, "usage": True, "finish_reason": True},
                 }
-            ]
+            ],
+            "10": [{"scenario": "cancellation", "error": "response-contract-inconclusive"}],
         },
     }
     value.update(changes)
@@ -68,7 +72,7 @@ class DevRuntimeTest(unittest.TestCase):
     def test_full_check_results_use_the_extended_deadline_and_strict_schema(self):
         results = observations(
             rules={
-                "9": observations()["rules"]["9"],
+                **observations()["rules"],
                 "3": {
                     "checks": [
                         {"name": name, "status": "passed"}

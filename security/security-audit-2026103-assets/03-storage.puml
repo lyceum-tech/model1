@@ -1,0 +1,46 @@
+@startuml
+!include style.iuml
+title Customer journey 3: authenticate to storage and upload/download job files
+actor "Customer CLI / SDK" as C
+boundary "Public API / S3\nNGINX edge" as E
+participant "Gateway\ncredential helper" as W
+participant "MinIO STS / S3\non GCP VM" as M
+participant "MinIO identity plugin\nlocal authentication" as I
+participant "Supabase\nJWT / API-key authority" as A
+database "GCP VM disk\nMinIO objects" as D
+
+opt Credential helper used (direct STS is also possible)
+C -[#16803C]> E : [ENC] HTTPS: authenticate / request storage credentials
+E -[#DC2626]> W : [PLAIN] Internal HTTP to Gateway
+W -[#D4A000]> M : [CHECK] Request STS credentials on customer's behalf\nCapture effective helper-to-STS URL and routing
+end
+opt Direct STS exchange
+C -[#16803C]> E : [ENC] HTTPS: STS exchange with caller token
+E -[#DC2626]> M : [PLAIN] Internal HTTP to MinIO
+end
+M -[#DC2626]> I : [PLAIN] Local HTTP identity-plugin call
+I -[#16803C]> A : [ENC] HTTPS: validate JWT / look up API key
+A -[#16803C]> I : [ENC] HTTPS identity response
+I -[#DC2626]> M : [PLAIN] Local HTTP authorization / session policy response
+note over I,A
+JWT is validated upstream, not just parsed.
+API-key expiry and session lifetime/revocation have gaps (F04).
+Plugin permits up to one year; not every issued session lasts a year.
+end note
+M -[#DC2626]> E : [PLAIN] STS credential response: HTTP backend;\nhelper path may also traverse Gateway
+E -[#16803C]> C : [ENC] HTTPS: temporary storage credentials
+group Upload inputs / download outputs
+C -[#16803C]> E : [ENC] HTTPS: signed S3 PUT / GET with tenant credentials
+E -[#DC2626]> M : [PLAIN] HTTP: object content and request metadata
+M -[#DC2626]> M : [PLAIN] Object bytes readable to MinIO process
+M -[#16803C]> D : [ENC] GCP storage-layer encryption at rest
+note over M,D
+No enforced MinIO SSE/KMS or customer-only encryption established.
+Disk encryption does not hide objects from MinIO/admins.
+STS policy enforcement also requires the MinIO fix (F03).
+end note
+D -[#DC2626]> M : [PLAIN] Transparent disk decryption returns readable bytes\nLocal application read, not a plaintext network claim
+M -[#DC2626]> E : [PLAIN] HTTP: download body / upload acknowledgement
+E -[#16803C]> C : [ENC] HTTPS: file or acknowledgement
+end
+@enduml

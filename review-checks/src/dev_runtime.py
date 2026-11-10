@@ -34,7 +34,7 @@ def validate_observations(data, base, head, policy, tests=False):
         raise ValueError("Remote runtime is not bound to the requested candidates and policy")
     if data["runtime"] != {"candidate_revision_verified": True, "backend": "fake-openai-compatible"}:
         raise ValueError("Remote runtime did not verify its candidate image")
-    expected_rules = {"9", "3"} if tests else {"9"}
+    expected_rules = {"4", "5", "7", "9", "10", "3"} if tests else {"4", "5", "7", "9", "10"}
     if not isinstance(data["rules"], dict) or set(data["rules"]) != expected_rules:
         raise ValueError("Remote runtime returned malformed rules")
     if tests:

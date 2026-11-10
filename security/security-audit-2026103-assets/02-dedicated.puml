@@ -1,0 +1,52 @@
+@startuml
+!include style.iuml
+title Customer journey 2: create and use dedicated inference
+actor Customer as C
+boundary "Public API edge\nNGINX / GCP ingress" as E
+participant "DeploymentController\n(Gateway on legacy routes)" as D
+participant "Identity / org / billing\nauthorization services" as A
+database "Cloud SQL\nmetadata / cluster state" as S
+participant "Kubernetes API\nOIDC + namespace RBAC" as K
+participant "Autoscaler / Hydra\ncapacity provisioning" as H
+participant "cert-manager\nCA Secret / leaf Secret" as T
+participant "Registry / model\nartifact source" as R
+participant "Dedicated serving pod\nvLLM / Dynamo" as M
+database "Worker disks / PVC\nmodel and runtime cache" as V
+participant "Host CPU / GPU\nRAM / VRAM" as G
+
+C -[#16803C]> E : [ENC] HTTPS: credentials, model, SKU, deployment request
+E -[#D4A000]> D : [CHECK] Controller HTTPS route lacks upstream verification;\nmanaged container h2c boundary still terminates TLS
+note over E,D
+Route dependent: legacy NGINX -> Gateway is HTTP [PLAIN].
+Do not infer that every public API route has identical protection.
+end note
+D -[#D4A000]> A : [CHECK] Check identity, org ownership, entitlement / quota\nService-specific transport and delegated authority need capture
+D -[#D4A000]> S : [CHECK] Private SQL TLS required; not all client\nCA/hostname verification is established
+S -[#16803C]> S : [ENC] GCP disk / backup storage-layer encryption
+D -[#16803C]> K : [ENC] HTTPS + Google OIDC identity; namespace RBAC\nCreate desired deployment and workload resources
+opt Additional capacity required
+K -[#D4A000]> H : [CHECK] Scheduling demand / autoscaler reconciliation\nLogical control dependency; inspect watcher identity
+H -[#16803C]> H : [ENC] Autoscaler -> Hydra gRPC uses verified mTLS\nProvider/SSH bootstrap continues in journey 5
+end
+K -[#D4A000]> T : [CHECK] Issue / distribute TLS identity via cluster API\nSigner authority and CA storage need hardening
+T -[#D4A000]> M : [CHECK] Shared wildcard leaf private key mounted\nLong lifetime; renewal requires recycle (F07)
+R -[#D4A000]> M : [CHECK] Image/model retrieval; per-source HTTPS and integrity\nMutable tags / remote model code remain supply-chain risks
+M -[#D4A000]> V : [CHECK] Persist weights / runtime cache\nWorker disk and PVC encryption not uniformly established
+D -[#D4A000]> E : [CHECK] Status / endpoint over route-dependent backend
+E -[#16803C]> C : [ENC] HTTPS: ready deployment and endpoint metadata
+group Customer uses the dedicated model
+C -[#16803C]> E : [ENC] HTTPS: inference request for owned deployment
+ref over C,G
+Journey 1: InferenceProxy checks access and routes HTTPS to this pod.
+No prompt is implied to pass through the deployment controller.
+end ref
+M -[#DC2626]> M : [PLAIN] Decrypted prompt / tokens in serving process
+M -[#D4A000]> G : [CHECK] GPU execution; no enforced CPU/GPU attestation\nor confidential-memory/key-release policy demonstrated
+G -[#D4A000]> M : [CHECK] Result / KV cache in workload-visible memory
+end
+note over M,G
+Dedicated placement does not exclude host root, provider operators
+or hypervisor access. Dynamo caller-auth gap still applies (F08).
+Customer responses follow the reverse path in journey 1.
+end note
+@enduml

@@ -7,6 +7,7 @@ import os
 import ssl
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -29,6 +30,32 @@ MESSAGES = dict.fromkeys(
     ("plain", "tools", "search", "stop-string"),
     [{"role": "user", "content": "Produce one short deterministic greeting."}],
 )
+NORM_MESSAGES = [{"role": "user", "content": "Normalization probe request."}]
+ARG_MESSAGES = [{"role": "user", "content": "Argument shape probe request."}]
+SLOW_MESSAGES = [{"role": "user", "content": "Slow stream probe request."}]
+INVALID_MESSAGES = [{"role": "user", "content": "Invalid stream probe request."}]
+ERROR_PREFIX = "REVIEW-ERROR-MODE:"
+ARGUMENT_SHAPES = {
+    "probe_string": '"Zurich"',
+    "probe_array": '["Zurich","celsius"]',
+    "probe_object": '{"location":"Zurich"}',
+}
+SLOW_STREAM_GAP_S = 4.0
+TIMEOUT_SLEEP_S = 120.0
+
+_recording_lock = threading.Lock()
+_recording = {"count": 0, "body": None}
+
+
+def record_request(body):
+    with _recording_lock:
+        _recording["count"] += 1
+        _recording["body"] = body
+
+
+def recorded_request():
+    with _recording_lock:
+        return {"count": _recording["count"], "body": _recording["body"]}
 
 
 def authorized(header, token):
@@ -81,6 +108,18 @@ class Handler(BaseHTTPRequestHandler):
     def refuse(self, status=403):
         self.respond({"error": "refused"}, status)
 
+    def raw_response(self, body, status=200, content_type="application/json", headers=()):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Connection", "close")
+        self.close_connection = True
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
     def service_authorized(self):
         return authorized(self.headers.get("Authorization", ""), os.environ["SERVICE_TOKEN"])
 
@@ -113,7 +152,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlsplit(self.path)
-        if parsed.path == "/health":
+        if parsed.path == "/__review__/recorded":
+            if not self.caller_authorized():
+                self.refuse(401)
+            else:
+                self.respond(recorded_request())
+        elif parsed.path == "/health":
             self.respond({"status": "ok"})
         elif parsed.path == "/auth/v1/user":
             if not self.caller_authorized() or self.headers.get("apikey") != os.environ["SUPABASE_KEY"]:
@@ -224,7 +268,30 @@ class Handler(BaseHTTPRequestHandler):
             self.refuse(400)
             return
         names = {function_name(tool) for tool in tools}
-        if messages == MESSAGES["stop-string"] and body.get("stop") == [STOP_MARKER]:
+        content = messages[0].get("content") if len(messages) == 1 and isinstance(messages[0], dict) else None
+        if isinstance(content, str) and content.startswith(ERROR_PREFIX):
+            self.error_mode(content[len(ERROR_PREFIX):])
+        elif messages == NORM_MESSAGES:
+            record_request(body)
+            self.completion_response({"content": TEXT}, "stop", body)
+        elif messages == SLOW_MESSAGES:
+            self.completion_response({"content": TEXT}, "stop", body, gap=SLOW_STREAM_GAP_S)
+        elif messages == INVALID_MESSAGES:
+            self.invalid_stream_response()
+        elif messages == ARG_MESSAGES and names & set(ARGUMENT_SHAPES):
+            name = sorted(names & set(ARGUMENT_SHAPES))[0]
+            call = tool_call("call_review_shape", name, ARGUMENT_SHAPES[name])
+            self.completion_response(
+                {"content": None, "tool_calls": [call]}, "tool_calls", body, gap=SLOW_STREAM_GAP_S
+            )
+        elif (
+            messages[:1] == ARG_MESSAGES
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "tool"
+            and messages[-1].get("tool_call_id") == "call_review_shape"
+        ):
+            self.completion_response({"content": TEXT}, "stop", body, gap=SLOW_STREAM_GAP_S)
+        elif messages == MESSAGES["stop-string"] and body.get("stop") == [STOP_MARKER]:
             self.completion_response({"content": STOP_TEXT}, "stop", body)
         elif messages == MESSAGES["tools"] and "lookup_weather" in names:
             call = tool_call(TOOL_CALL_ID, "lookup_weather", TOOL_ARGUMENTS)
@@ -246,13 +313,50 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.refuse(400)
 
-    def completion_response(self, message, finish_reason, request_body):
+    def error_mode(self, directive):
+        mode, _, canary = directive.partition(":")
+        if not canary or len(canary) > 128:
+            self.refuse(400)
+        elif mode == "parse-error":
+            self.raw_response(b'{"id":"runtime-completion","choices":[' + canary.encode())
+        elif mode == "upstream-error":
+            self.respond({"error": {"message": f"upstream failure {canary}"}}, 500)
+        elif mode == "redirect":
+            self.raw_response(
+                b"", 307, headers=(("Location", f"/v1/chat/completions?signature={canary}"),)
+            )
+        elif mode == "timeout":
+            time.sleep(TIMEOUT_SLEEP_S)
+            self.close_connection = True
+        else:
+            self.refuse(400)
+
+    def invalid_stream_response(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        chunk = {
+            "id": "runtime-completion",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": MODEL,
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "partial"}, "finish_reason": None}],
+            "usage": None,
+        }
+        self.wfile.write(b"data: " + json.dumps(chunk, separators=(",", ":")).encode() + b"\n\n")
+        self.wfile.write(b"data: {not-json\n\n")
+        self.wfile.flush()
+        self.close_connection = True
+
+    def completion_response(self, message, finish_reason, request_body, gap=0.0):
         if request_body.get("stream") is not True:
             self.respond(completion(message, finish_reason))
             return
-        self.stream_response(message, finish_reason)
+        self.stream_response(message, finish_reason, gap)
 
-    def stream_response(self, message, finish_reason):
+    def stream_response(self, message, finish_reason, gap=0.0):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -271,8 +375,10 @@ class Handler(BaseHTTPRequestHandler):
         text = message.get("content")
         if text:
             midpoint = len(text) // 2
-            for part in (text[:midpoint], text[midpoint:]):
+            for position, part in enumerate((text[:midpoint], text[midpoint:])):
                 event([{"index": 0, "delta": {"content": part}, "finish_reason": None}])
+                if position == 0 and gap:
+                    time.sleep(gap)
         for index, call in enumerate(message.get("tool_calls", [])):
             first = {
                 "index": index,
@@ -281,6 +387,8 @@ class Handler(BaseHTTPRequestHandler):
                 "function": {"name": call["function"]["name"], "arguments": ""},
             }
             event([{"index": 0, "delta": {"tool_calls": [first]}, "finish_reason": None}])
+            if gap:
+                time.sleep(gap)
             arguments = call["function"]["arguments"]
             midpoint = len(arguments) // 2
             for part in (arguments[:midpoint], arguments[midpoint:]):

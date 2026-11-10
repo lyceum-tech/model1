@@ -22,10 +22,34 @@ if args[:1] == ["compose"]:
     if action == "exec":
         if os.environ.get("REVIEW_TEST_FAIL") == "exec":
             sys.exit(1)
-        print(json.dumps([
-            {"scenario": scenario, "comparisons": {"text": True, "model": True, "usage": True, "finish_reason": True}}
-            for scenario in ("plain", "tools", "search", "stop-string")
-        ]))
+        canary = os.environ["REVIEW_CANARY"]
+        print(json.dumps({
+            "4": [
+                {"scenario": scenario, "actual_status": 200, "contract_status": 200,
+                 "required_fields": ["id"], "response_fields": ["id"]}
+                for scenario in ("sdk", "public-routing", "response-schema")
+            ],
+            "5": [
+                {"scenario": scenario, "forwarded": False, "accepted": False, "status": 400,
+                 "normalized": None, "validated": None, "upstream_value": None, "ambiguous_aliases": False}
+                for scenario in ("absent", "null", "empty", "wrong-type", "zero", "negative", "conflicting-aliases")
+            ],
+            "7": [
+                {"scenario": scenario, "canaries": [canary + "-" + scenario], "client_error": "http-500"}
+                for scenario in ("parse-error", "timeout", "redirect", "upstream-error")
+            ],
+            "9": [
+                {"scenario": scenario, "comparisons": {"text": True, "model": True, "usage": True, "finish_reason": True}}
+                for scenario in ("plain", "tools", "search", "stop-string")
+            ],
+            "10": [
+                {"scenario": scenario, "idle_limit_ms": 3000,
+                 "events": [{"turn": 1, "kind": "content", "time_ms": 1}, {"turn": 1, "kind": "done", "time_ms": 2}]}
+                for scenario in ("string-argument", "array-argument", "object-argument", "cancellation", "invalid-message", "queue-pressure")
+            ],
+        }))
+    elif action == "logs":
+        print("candidate log output without review canaries")
     elif action == "images":
         print("a" * 64)
     elif action == os.environ.get("REVIEW_TEST_FAIL", "") or (
@@ -84,6 +108,9 @@ class LifecycleTest(GitFixture):
         self.assertEqual(data["head"], self.head)
         self.assertEqual(self.build.read_text(), "FROM candidate\nARG BUILD_COMMIT\n")
         self.assertEqual(data["rules"]["9"][0]["comparisons"]["text"], True)
+        self.assertEqual(set(data["rules"]), {"4", "5", "7", "9", "10"})
+        self.assertEqual(data["rules"]["7"][0]["captured_logs"], "")
+        self.assertNotIn("review-canary-", json.dumps(data["rules"]["4"] + data["rules"]["5"] + data["rules"]["10"]))
         self.assertIn("stack-review-", self.cleanup.read_text())
         self.assertFalse(any((self.home / "runs").iterdir()))
         commands = [json.loads(line) for line in self.log.read_text().splitlines()]
@@ -152,41 +179,70 @@ class LifecycleTest(GitFixture):
 
 class EvidenceTest(unittest.TestCase):
     def valid(self):
-        return [
-            {"scenario": scenario, "comparisons": {"text": True, "model": True, "usage": True, "finish_reason": True}}
-            for scenario in ("plain", "tools", "search", "stop-string")
-        ]
+        return {
+            "4": [
+                {"scenario": scenario, "actual_status": 200, "contract_status": 200,
+                 "required_fields": ["id"], "response_fields": ["id"]}
+                for scenario in runtime_agent.PROBE_SCENARIOS["4"]
+            ],
+            "5": [
+                {"scenario": scenario, "forwarded": False, "accepted": False, "status": 400,
+                 "normalized": None, "validated": None, "upstream_value": None, "ambiguous_aliases": False}
+                for scenario in runtime_agent.PROBE_SCENARIOS["5"]
+            ],
+            "7": [
+                {"scenario": scenario, "canaries": [f"review-canary-test-{scenario}"], "client_error": "http-500"}
+                for scenario in runtime_agent.PROBE_SCENARIOS["7"]
+            ],
+            "9": [
+                {"scenario": scenario, "comparisons": {"text": True, "model": True, "usage": True, "finish_reason": True}}
+                for scenario in runtime_agent.PROBE_SCENARIOS["9"]
+            ],
+            "10": [
+                {"scenario": scenario, "idle_limit_ms": 3000,
+                 "events": [{"turn": 1, "kind": "content", "time_ms": 1}, {"turn": 1, "kind": "done", "time_ms": 2}]}
+                for scenario in runtime_agent.PROBE_SCENARIOS["10"]
+            ],
+        }
 
     def test_malformed_probe_output_is_rejected(self):
-        duplicate = self.valid()
-        duplicate[1]["scenario"] = "plain"
-        non_boolean = self.valid()
-        non_boolean[1]["comparisons"]["text"] = "yes"
-        non_object = self.valid()
-        non_object[1]["comparisons"] = None
-        unexpected_field = self.valid()
-        unexpected_field[1]["raw"] = "secret response"
-        missing_field = self.valid()
-        del missing_field[1]["comparisons"]["usage"]
-        unexpected_scenario = self.valid()
-        unexpected_scenario[1]["scenario"] = "unexpected"
-        cases = [
-            [], {}, self.valid()[:-1], duplicate, non_boolean, non_object, unexpected_field, missing_field,
-            unexpected_scenario,
-        ]
+        duplicate = json.loads(json.dumps(self.valid()))
+        duplicate["9"][1]["scenario"] = "plain"
+        non_boolean = json.loads(json.dumps(self.valid()))
+        non_boolean["9"][1]["comparisons"]["text"] = "yes"
+        unexpected_field = json.loads(json.dumps(self.valid()))
+        unexpected_field["4"][0]["raw"] = "secret response"
+        bad_event = json.loads(json.dumps(self.valid()))
+        bad_event["10"][0]["events"][0]["kind"] = "mystery"
+        bool_status = json.loads(json.dumps(self.valid()))
+        bool_status["5"][0]["status"] = True
+        missing_rule = json.loads(json.dumps(self.valid()))
+        del missing_rule["10"]
+        cases = [[], {}, duplicate, non_boolean, unexpected_field, bad_event, bool_status, missing_rule]
         for output in [*(json.dumps(case) for case in cases), "x" * (runtime_agent.MAX_PROBE_BYTES + 1)]:
             with self.subTest(output=output[:80]), patch.object(runtime_agent, "checked", return_value=output):
                 with self.assertRaises((ValueError, RuntimeError, KeyError, TypeError, json.JSONDecodeError)):
-                    runtime_agent.comparison_fact("stack-review", os.environ.copy())
+                    runtime_agent.probe_facts("stack-review", os.environ.copy())
 
     def test_anonymous_http_error_remains_inconclusive(self):
         expected = self.valid()
-        expected[1] = {"scenario": "tools", "error": "response-contract-inconclusive"}
+        expected["9"][1] = {"scenario": "tools", "error": "response-contract-inconclusive"}
         with patch.object(runtime_agent, "checked", return_value=json.dumps(expected)) as execute:
-            facts = runtime_agent.comparison_fact("stack-review", os.environ.copy())
+            facts = runtime_agent.probe_facts("stack-review", os.environ.copy())
         self.assertEqual(facts, expected)
         self.assertEqual(execute.call_args.args[0][-1], "--all")
         self.assertNotIn("Bearer", json.dumps(facts))
+
+    def test_log_enrichment_searches_bound_canaries_without_forwarding_logs(self):
+        facts = self.valid()["7"]
+        prefix = "review-canary-test"
+        leaked = runtime_agent.enrich_log_facts(facts, f"prefix {prefix}-timeout suffix", prefix)
+        self.assertEqual(leaked[1]["captured_logs"], f"{prefix}-timeout")
+        self.assertEqual(leaked[0]["captured_logs"], "")
+        missing = runtime_agent.enrich_log_facts(facts, None, prefix)
+        self.assertTrue(all(fact.get("error") == "response-contract-inconclusive" for fact in missing))
+        with self.assertRaises(RuntimeError):
+            runtime_agent.enrich_log_facts(facts, "logs", "review-canary-other")
 
 
 class DevelopmentCheckTest(GitFixture):
