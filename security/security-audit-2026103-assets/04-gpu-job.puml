@@ -1,0 +1,51 @@
+@startuml
+!include style.iuml
+title Customer journey 4: submit GPU job, read inputs, compute and receive output
+actor "Customer CLI" as C
+boundary "Public API\nNGINX" as E
+participant "Gateway / Streamer\nauth, job dispatch" as W
+participant "GCP Envoy\nsidecar" as S
+participant "Consul CA / discovery\ncontrol plane" as A
+participant "Worker Envoy\nsidecar" as T
+participant "Execlet\nworker agent" as X
+participant "Customer job\nprivileged container" as J
+participant "Public S3 edge / MinIO\nsee journey 3" as O
+database "Worker disk / caches\nlogs / artifacts" as D
+participant "CPU / GPU\nRAM / VRAM" as G
+
+C -[#16803C]> E : [ENC] HTTPS: job, image, files, environment, API credential
+E -[#DC2626]> W : [PLAIN] HTTP backend; authenticate / authorize job owner
+W -[#D4A000]> W : [CHECK] Encrypt environment / envelope S3 credentials\nEmbedded decrypt key undermines credential isolation (F02)
+A -[#D4A000]> S : [CHECK] Mesh identity / service discovery\nACL, CA and control-plane trust gaps (F10)
+A -[#D4A000]> T : [CHECK] Mesh identity / service discovery (F10)
+W -[#DC2626]> S : [PLAIN] Local application -> sidecar
+S -[#16803C]> T : [ENC] Consul Connect mTLS: job / stream transport\nWireGuard additionally on Tailscale routes
+note over S,T
+mTLS protects this inter-sidecar link. It does not cure broad
+ACLs, weak control-plane trust or direct-backend bypass.
+Tunnel endpoints and permitted routes must be captured (F06/F10).
+end note
+T -[#DC2626]> X : [PLAIN] Local loopback gRPC; sidecar has terminated TLS
+X -[#DC2626]> D : [PLAIN] Decrypted S3 credentials explicitly logged (F02)\nLocal plaintext log content; disk encryption unknown
+X -[#DC2626]> J : [PLAIN] Local container launch / credentials in process\nPrivileged execution weakens host isolation (F01)
+J -[#16803C]> O : [ENC] HTTPS to standard public S3 endpoint\nFetch inputs / write results with scoped credentials
+ref over J,O
+Journey 3: S3 edge -> MinIO is HTTP; GCP disk encrypted.
+Custom mount endpoints require their own transport assessment.
+end ref
+J -[#D4A000]> D : [CHECK] Local inputs, outputs, scratch and caches\nDisk/swap/dump encryption and deletion not established
+J -[#DC2626]> J : [PLAIN] Inputs / secrets readable inside customer process
+J -[#D4A000]> G : [CHECK] CPU-GPU transfer and execution\nMemory/link encryption and attestation not established
+G -[#D4A000]> J : [CHECK] Results in workload-visible memory
+J -[#DC2626]> X : [PLAIN] Local stdout / stderr / result metadata
+X -[#DC2626]> T : [PLAIN] Local stream -> sidecar
+T -[#16803C]> S : [ENC] Connect mTLS: output stream
+S -[#DC2626]> W : [PLAIN] Local sidecar -> Streamer
+W -[#DC2626]> E : [PLAIN] HTTP backend response
+E -[#16803C]> C : [ENC] HTTPS: logs / job status / output references
+note over D,G
+Provider/site and host isolation determine who can reach live data.
+No universal confidential-computing or encrypted-local-disk guarantee.
+Log exporter transport, retention and readers require separate capture.
+end note
+@enduml

@@ -58,5 +58,261 @@
       "platform-staging",
       "platform-production"
     ]
-  }
+  },
+  "security": [
+    {
+      "id": "workload-isolation",
+      "findings": [
+        {
+          "finding": "F01",
+          "kind": "forbidden",
+          "paths": ["**/*.go", "**/*.yml", "**/*.yaml", "**/*.j2", "**/*.json"],
+          "patterns": ["(?i)\\bprivileged\\s*[:=]\\s*true\\b"]
+        },
+        {
+          "finding": "F15",
+          "kind": "forbidden",
+          "paths": ["iris/**/*.go", "iris/**/*.py", "iris/**/*.yml", "iris/**/*.yaml", "iris/**/*.j2"],
+          "patterns": ["--trust-remote-code", "trust_remote_code\\s*[:=]\\s*[Tt]rue\\b"]
+        },
+        {
+          "finding": "F15",
+          "kind": "forbidden_unless",
+          "paths": ["iris/deployment_controller/internal/k8smanifest/*.go"],
+          "patterns": ["corev1\\.Container\\s*\\{"],
+          "required": ["RunAsNonRoot"]
+        }
+      ]
+    },
+    {
+      "id": "secrets-in-source-and-logs",
+      "findings": [
+        {
+          "finding": "F02",
+          "kind": "forbidden",
+          "paths": ["**/*.go", "**/*.py", "**/*.js", "**/*.ts", "**/*.tsx", "**/*.java", "**/*.rb", "**/*.sh", "**/*.yml", "**/*.yaml", "**/*.toml", "**/*.json", "**/*.pem", "**/*.key", "**/*.j2"],
+          "patterns": ["-----BEGIN [A-Z ]*PRIVATE KEY-----"]
+        },
+        {
+          "finding": "F02",
+          "kind": "forbidden",
+          "paths": ["**/*.go"],
+          "patterns": [
+            "(?i)\\b(?:slog|log|logger)\\.\\w+\\([^\\n]*\"(?:creds?|credentials?|secrets?|password|passwd|private_?key|access_?key|secret_?key|api_?key|token)\"\\s*,",
+            "(?i)\\b(?:log|logger)\\.(?:Printf|Print|Println|Fatalf?)\\([^\\n]*\\b(?:creds?|credentials?|secrets?|password|private[ _-]?key)\\b[^\\n]*%"
+          ]
+        },
+        {
+          "finding": "F20",
+          "kind": "forbidden",
+          "paths": ["**/*.go"],
+          "patterns": [
+            "\\b(?:slog|log|logger)\\.\\w+\\([^\\n]*\"(?:job|request|payload)\"\\s*,\\s*[A-Za-z_][\\w.]*?(?<!ID)(?<!Id)\\s*[,)]",
+            "(?i)\\b(?:log|slog|logger)\\.\\w+\\([^\\n]*%\\+v[^\\n]*\\b(?:job|request|req|payload)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "storage-version-and-sessions",
+      "findings": [
+        {
+          "finding": "F03",
+          "kind": "version_floor",
+          "paths": ["infra/**/*.yml", "infra/**/*.yaml"],
+          "patterns": ["ubuntu_minio_minio_version:\\s*RELEASE\\.(\\d{4}-\\d{2}-\\d{2})"],
+          "floor": "2025-10-15"
+        },
+        {
+          "finding": "F04",
+          "kind": "max_literal",
+          "paths": ["infra/services/minio-identity-plugin/**/*.go"],
+          "patterns": ["MaxValiditySeconds:\\s*([A-Za-z_]\\w*|\\d+)"],
+          "max": 900
+        },
+        {
+          "finding": "F04",
+          "kind": "forbidden_unless",
+          "paths": ["infra/services/minio-identity-plugin/internal/supabase/*.go"],
+          "patterns": ["api_keys\\?"],
+          "required": ["expires_at"]
+        }
+      ]
+    },
+    {
+      "id": "ci-federation-and-standing-privilege",
+      "findings": [
+        {
+          "finding": "F05",
+          "kind": "forbidden",
+          "paths": ["infra/terraform/**/*.tf"],
+          "patterns": ["attribute\\.repository_owner/"]
+        },
+        {
+          "finding": "F12",
+          "kind": "forbidden",
+          "paths": ["infra/terraform/**/*.tf"],
+          "patterns": ["role\\s*=\\s*\"roles/owner\""]
+        },
+        {
+          "finding": "F22",
+          "kind": "forbidden",
+          "paths": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
+          "patterns": ["uses:\\s*[\\w./-]+@(?:main|master|latest)\\b"]
+        },
+        {
+          "finding": "F22",
+          "kind": "forbidden",
+          "paths": ["infra/terraform/**/*.tf"],
+          "patterns": ["dismiss_stale_reviews_on_push\\s*=\\s*false", "require_last_push_approval\\s*=\\s*false"]
+        }
+      ]
+    },
+    {
+      "id": "network-exposure-and-plaintext-transport",
+      "findings": [
+        {
+          "finding": "F06",
+          "kind": "block_combo",
+          "paths": ["infra/terraform/**/*.tf"],
+          "block_start": "^\\s*resource\\s+\"google_compute_firewall\"",
+          "patterns": ["\"0\\.0\\.0\\.0/0\"", "ports\\s*=\\s*\\[[^\\]]*\\b(?:22|8300|8301|8302|8500|8501|8502|8503|8600|20000)\\b"]
+        },
+        {
+          "finding": "F06",
+          "kind": "forbidden",
+          "paths": ["infra/terraform/tailscale/**/*.tf"],
+          "patterns": ["\\$\\{cfg\\.[A-Za-z_]*\\}:\\*\""]
+        },
+        {
+          "finding": "F09",
+          "kind": "forbidden_unless",
+          "paths": ["infra/ansible/**/*.yml", "infra/ansible/**/*.yaml", "infra/ansible/**/*.j2"],
+          "patterns": ["proxy_pass\\s+https://"],
+          "required": ["proxy_ssl_verify\\s+on\\s*;"]
+        },
+        {
+          "finding": "F09",
+          "kind": "forbidden",
+          "paths": ["infra/ansible/**/*.yml", "infra/ansible/**/*.yaml", "infra/ansible/**/*.j2"],
+          "patterns": ["proxy_ssl_verify\\s+off\\b"]
+        },
+        {
+          "finding": "F13",
+          "kind": "forbidden",
+          "paths": ["infra/**/*.yml", "infra/**/*.yaml", "infra/**/*.tf", "infra/**/*.j2", "infra/**/*.py", "infra/**/*.go", "iris/**/*.go", "iris/**/*.py", "iris/**/*.yml", "iris/**/*.yaml", "app/**/*.py", "stream_execlet/**/*.go", "daedalus_go/**/*.go"],
+          "patterns": [
+            "\\bredis://(?!localhost\\b|127\\.0\\.0\\.1|\\[::1\\])",
+            "\\bamqp://",
+            "\\bhttp://(?:atlas|minio|gateway)\\b"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "service-identity-mesh-and-endpoint-auth",
+      "findings": [
+        {
+          "finding": "F07",
+          "kind": "forbidden",
+          "paths": ["infra/ansible/**/*.j2", "infra/ansible/**/*.yml", "infra/ansible/**/*.yaml"],
+          "patterns": ["^\\s*-\\s*\"?\\*\\."]
+        },
+        {
+          "finding": "F07",
+          "kind": "max_literal",
+          "paths": ["infra/ansible/**/*.yml", "infra/ansible/**/*.yaml"],
+          "patterns": ["iris_endpoint_cert_duration:\\s*(\\d+)h\\b"],
+          "max": 8760
+        },
+        {
+          "finding": "F07",
+          "kind": "max_literal",
+          "paths": ["infra/ansible/**/*.yml", "infra/ansible/**/*.yaml"],
+          "patterns": ["iris_endpoint_ca_duration:\\s*(\\d+)h\\b"],
+          "max": 43800
+        },
+        {
+          "finding": "F08",
+          "kind": "block_required",
+          "paths": ["iris/deployment_controller/internal/k8smanifest/*.go"],
+          "block_start": "func buildDGD\\(",
+          "required": ["VLLM_API_KEY|APIKey|api-key|Authorization"]
+        },
+        {
+          "finding": "F10",
+          "kind": "forbidden_unless",
+          "paths": ["infra/ansible/playbooks/roles/consul/templates/*.j2"],
+          "patterns": ["(?:bind_addr|client_addr)\\s*=\\s*\"0\\.0\\.0\\.0\""],
+          "required": ["^\\s*acl\\s*\\{", "enabled\\s*=\\s*true", "verify_incoming\\s*=\\s*true"]
+        }
+      ]
+    },
+    {
+      "id": "ssh-bootstrap-and-vm-handover",
+      "findings": [
+        {
+          "finding": "F11",
+          "kind": "forbidden",
+          "paths": ["**/*.go", "**/*.cfg", "**/*.yml", "**/*.yaml", "**/*.py", "**/*.sh", "**/*.tf"],
+          "patterns": [
+            "InsecureIgnoreHostKey\\s*\\(",
+            "(?i)host_key_checking\\s*[:=]\\s*false\\b",
+            "(?i)stricthostkeychecking\\s*[=\\s]\\s*(?:no|off)\\b"
+          ]
+        },
+        {
+          "finding": "F24",
+          "kind": "forbidden_unless",
+          "paths": ["infra/ansible/**/lyceum_user/**/*.yml", "infra/ansible/**/lyceum_user/**/*.yaml"],
+          "patterns": ["ansible\\.posix\\.authorized_key:"],
+          "required": ["exclusive:\\s*(?:true|yes)\\b"]
+        }
+      ]
+    },
+    {
+      "id": "platform-hardening-and-lifecycle",
+      "findings": [
+        {
+          "finding": "F14",
+          "kind": "forbidden_unless",
+          "paths": ["infra/ansible/playbooks/roles/k3s_server/templates/config.yaml.j2"],
+          "patterns": ["^cluster-cidr:"],
+          "required": ["secrets-encryption:\\s*true"]
+        },
+        {
+          "finding": "F17",
+          "kind": "forbidden_unless",
+          "paths": ["infra/ansible/playbooks/roles/block_volumes/**/*.yml", "infra/ansible/playbooks/roles/block_volumes/**/*.yaml"],
+          "patterns": ["community\\.general\\.filesystem:"],
+          "required": ["(?i)cryptsetup|luks"]
+        },
+        {
+          "finding": "F18",
+          "kind": "forbidden",
+          "paths": ["infra/ansible/**/*.yml", "infra/ansible/**/*.yaml"],
+          "patterns": ["apt_unattended_upgrades_enabled:\\s*false\\b"]
+        },
+        {
+          "finding": "F19",
+          "kind": "forbidden",
+          "paths": ["infra/inventory/**/*.yml", "infra/inventory/**/*.yaml"],
+          "patterns": ["[A-Za-z0-9._/-]+:latest\\b"]
+        },
+        {
+          "finding": "F19",
+          "kind": "forbidden",
+          "paths": ["**/Dockerfile", "**/Dockerfile.*", "**/*.dockerfile"],
+          "patterns": ["^FROM\\s+(?:--platform=\\S+\\s+)?(?!.*@sha256:)[A-Za-z0-9._/-]*[/:.][A-Za-z0-9._/:-]*"]
+        },
+        {
+          "finding": "F21",
+          "kind": "forbidden_unless",
+          "paths": ["infra/terraform/**/cloud_sql/**/*.tf"],
+          "patterns": ["resource\\s+\"google_sql_database_instance\""],
+          "required": ["backup_configuration", "point_in_time_recovery_enabled\\s*=\\s*true"]
+        }
+      ]
+    }
+  ]
 }

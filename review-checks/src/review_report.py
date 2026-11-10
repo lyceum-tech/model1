@@ -1,4 +1,4 @@
-"""Evaluate seventeen advisory checks against a GitHub pull request."""
+"""Evaluate advisory checks against a GitHub pull request."""
 
 import argparse
 import hashlib
@@ -12,7 +12,14 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from gates import git, resolve
-from repository_checks import Snapshot, configuration_check, reference_check, validation_coverage_check
+from repository_checks import (
+    SECURITY_CHECKS,
+    Snapshot,
+    configuration_check,
+    reference_check,
+    security_check,
+    validation_coverage_check,
+)
 
 SUMMARIES = (
     "Required environment configuration",
@@ -32,6 +39,14 @@ SUMMARIES = (
     "Historical billing correctness",
     "Scoped CI publishing credentials",
     "Alerts match emitted signals",
+    "Workload isolation and model-code trust",
+    "Secrets in source and logs",
+    "Storage version and session lifetime",
+    "CI federation and standing privilege",
+    "Network exposure and plaintext transport",
+    "Service identity, mesh and endpoint auth",
+    "SSH bootstrap and VM handover",
+    "Platform hardening and lifecycle declarations",
 )
 COLORS = {"green": "GREEN", "yellow": "YELLOW", "red": "RED"}
 USEFUL = {"green": "yes", "yellow": "not yet", "red": "yes"}
@@ -95,6 +110,10 @@ def assess(repo: Path, base: str, head: str, observations: dict | None = None) -
                     lambda: reference_check(before, after),
                     lambda: validation_coverage_check(after, evidence.get("3")),
                 )[number - 1]()
+                result = verdict({"passed": "green", "failed": "red"}.get(check["status"], "yellow"), check["reason"])
+                result["findings"] = check.get("findings", [])
+            elif number > 17:
+                check = security_check(before, after, SECURITY_CHECKS[number - 18])
                 result = verdict({"passed": "green", "failed": "red"}.get(check["status"], "yellow"), check["reason"])
                 result["findings"] = check.get("findings", [])
             else:

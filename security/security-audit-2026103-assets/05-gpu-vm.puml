@@ -1,0 +1,48 @@
+@startuml
+!include style.iuml
+title Customer journey 5: rent a GPU VM, connect, compute and release
+actor Customer as C
+boundary "Public API\nNGINX" as E
+participant "Gateway / Hydra\nprovisioning control" as H
+participant "Provider API\nor Atlas adapter" as P
+participant "GPU VM guest\nSSH / lyceum user" as V
+database "Volumes / snapshots\nprovider storage" as D
+participant "CPU / GPU\nRAM / VRAM" as G
+actor "Employee / automation\nadmin identity" as A
+actor "Provider operator\nBMC / hypervisor / physical" as O
+
+C -[#16803C]> E : [ENC] HTTPS: authenticated request, region/SKU, SSH public key
+E -[#DC2626]> H : [PLAIN] Gateway HTTP backend\nAuthorize account / resource ownership
+alt External provider API
+H -[#D4A000]> P : [CHECK] Provider-specific API authentication and transport\nCapture effective endpoint, scopes and site admission
+else Atlas control path
+H -[#DC2626]> P : [PLAIN] Configured http://atlas with bearer token\nIndependent mesh coverage must be demonstrated
+end
+P -[#D4A000]> V : [CHECK] Provider creates guest / boot image / devices\nBoot trust, firmware and hypervisor evidence missing
+H -[#D4A000]> V : [CHECK] SSH bootstrap is encrypted but host key unchecked (F11)
+V -[#DC2626]> D : [PLAIN] Guest formats/mounts filesystem without LUKS\nProvider encryption below guest remains UNKNOWN
+H -[#D4A000]> V : [CHECK] SSH handover: remove root/ubuntu authorized keys\nNot proof of removal of every administrative identity (F24)
+H -[#DC2626]> E : [PLAIN] Gateway HTTP response: VM connection details
+E -[#16803C]> C : [ENC] HTTPS: address / connection information
+C -[#D4A000]> V : [CHECK] SSH encrypted; customer host-fingerprint\nverification not established by this repository
+V -[#DC2626]> V : [PLAIN] Customer commands / secrets in process memory
+V -[#D4A000]> G : [CHECK] Compute: CPU/GPU link and memory protection\nNo attestation-based admission / key release established
+G -[#D4A000]> V : [CHECK] Results in workload-visible memory
+V -[#D4A000]> D : [CHECK] Data persistence / optional snapshots\nProvider encryption, key custody and copies need evidence
+V -[#D4A000]> C : [CHECK] SSH result stream; host identity caveat remains
+group Administrative exposure (capability, not a normal customer request)
+A -[#D4A000]> H : [CHECK] IAM / SOPS / CI / provisioning authority\nBroad grants and shared secret access (F05/F12)
+A -[#D4A000]> V : [CHECK] Any retained guest/support access must be enumerated\nHandover is not a complete revocation proof
+O -[#D4A000]> V : [CHECK] Potential console / host / hypervisor access\nAuthorization and physical controls not evidenced per site
+O -[#D4A000]> D : [CHECK] Potential media/snapshot access\nEncryption and operator separation require provider evidence
+O -[#D4A000]> G : [CHECK] Potential debug / physical / host access\nConfidential GPU boundary not established
+end
+C -[#16803C]> E : [ENC] HTTPS: release VM / request data deletion
+E -[#DC2626]> H : [PLAIN] Gateway HTTP delete request
+H -[#D4A000]> P : [CHECK] Provider-specific deletion / volume lifecycle\nNo end-to-end attested erasure guarantee established
+note over V,O
+Apply separately to each actual provider/datacenter in section 5.
+Guest plaintext is not proof that provider physical media is unencrypted.
+No administrative-access arrow claims an employee actually read data.
+end note
+@enduml

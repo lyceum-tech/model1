@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import yaml
 
-from review_rules import rule_09
+from review_rules import rule_04, rule_05, rule_07, rule_09, rule_10
 from runtime_assets import fake_backend, probe
 
 
@@ -178,6 +178,33 @@ class ContractsTest(unittest.TestCase):
         prefixes = {json.dumps(body["messages"], sort_keys=True) for body in probe.SCENARIOS.values()}
         self.assertEqual(len(prefixes), 1)
 
+    def test_all_observations_covers_every_probe_rule_and_isolates_failures(self):
+        minimal = lambda scenario: {"scenario": scenario}  # noqa: E731 - shape is validated by the agent
+        with (
+            patch.object(probe, "contract_fact", side_effect=minimal),
+            patch.object(probe, "normalization_fact", side_effect=minimal),
+            patch.object(probe, "error_leak_fact", side_effect=ValueError("transport")),
+            patch.object(probe, "stream_progress_fact", side_effect=minimal),
+            patch.object(probe, "observations", return_value=[{"scenario": "plain"}]),
+        ):
+            facts = probe.all_observations()
+        self.assertEqual(set(facts), {"4", "5", "7", "9", "10"})
+        self.assertEqual([fact["scenario"] for fact in facts["4"]], list(probe.RULE_4_SCENARIOS))
+        self.assertEqual([fact["scenario"] for fact in facts["5"]], list(probe.NORM_SCENARIOS))
+        self.assertEqual([fact["scenario"] for fact in facts["10"]], list(probe.RULE_10_SCENARIOS))
+        self.assertEqual(facts["7"][0], {"scenario": "parse-error", "error": "response-contract-inconclusive"})
+        self.assertEqual(tuple(probe.NORM_SCENARIOS), rule_05.REQUIRED)
+        self.assertEqual(probe.RULE_4_SCENARIOS, rule_04.REQUIRED)
+        self.assertEqual(probe.RULE_7_SCENARIOS, rule_07.REQUIRED)
+        self.assertEqual(probe.RULE_10_SCENARIOS, rule_10.REQUIRED)
+
+    def test_canonical_token_limits(self):
+        cases = [(None, None), (30, 30), (30.0, 30), (" 30 ", 30), ("-5", -5)]
+        for value, expected in cases:
+            self.assertEqual(probe.canonical(value), expected)
+        for value in (True, 30.5, "", "thirty", [64], {"value": 30}):
+            self.assertEqual(probe.canonical(value), probe.INVALID_VALUE)
+
     def test_endpoint_does_not_accept_host_injection(self):
         for host in ("example.invalid/path", "example.invalid@other.invalid", "user:pass@example.invalid"):
             with self.subTest(host=host):
@@ -196,7 +223,7 @@ class RuntimeTopologyTest(unittest.TestCase):
             {
                 "iris": {
                     "*": {
-                        "max_pinned_sessions": 1,
+                        "max_pinned_sessions": 16,
                         "max_global_in_flight_request_slots": 2,
                         "global_in_flight_request_slots_reserved_for_pinned_sessions": 1,
                         "max_per_session_in_flight_request_slots": 1,
@@ -204,6 +231,11 @@ class RuntimeTopologyTest(unittest.TestCase):
                 }
             },
         )
+
+    def test_candidate_heartbeat_matches_the_probe_idle_ratio(self):
+        candidate = self.compose["services"]["inference-proxy"]
+        self.assertEqual(candidate["environment"]["STREAM_CHAT_HEARTBEAT_INTERVAL_S"], "1")
+        self.assertEqual(probe.IDLE_LIMIT_MS, 3000)
 
     def test_search_is_internal_and_candidate_gets_only_the_public_certificate(self):
         candidate = self.compose["services"]["inference-proxy"]
@@ -225,6 +257,7 @@ class FakeBackendTest(unittest.TestCase):
             "SUPABASE_KEY": "test-supabase-key",
             "ENDPOINT_SECRET": "test-endpoint-secret",
             "LINKUP_API_KEY": "test-linkup-key",
+            "REVIEW_CANARY": "review-canary-test",
             "DEPLOYMENT_ID": "runtime-fake-dep",
         }
         self.scope = patch.dict(os.environ, self.values)
@@ -247,6 +280,22 @@ class FakeBackendTest(unittest.TestCase):
             return response.status, response.read()
         finally:
             connection.close()
+
+    def get(self, path, token="test-caller-token"):
+        connection = self.connection()
+        headers = {"Authorization": "Bearer " + token} if token else {}
+        connection.request("GET", path, headers=headers)
+        response = connection.getresponse()
+        try:
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            connection.close()
+
+    def error_body(self, mode):
+        return {
+            "model": fake_backend.MODEL,
+            "messages": [{"role": "user", "content": f"{fake_backend.ERROR_PREFIX}{mode}:canary-value"}],
+        }
 
     def candidate_request(self, original_request, connection, payload):
         def upstream_request(body):
@@ -324,6 +373,102 @@ class FakeBackendTest(unittest.TestCase):
         self.assertEqual(json.loads(raw)["results"][0]["url"], fake_backend.SEARCH_URL)
         body = probe.REQUEST
         self.assertEqual(self.post("/v1/chat/completions", body, "wrong")[0], 401)
+
+    def test_normalization_requests_are_recorded_for_the_probe(self):
+        body = {"model": fake_backend.MODEL, "messages": fake_backend.NORM_MESSAGES, "max_tokens": [64]}
+        status, _raw = self.post("/v1/chat/completions", body, "test-caller-token")
+        self.assertEqual(status, 200)
+        status, _headers, raw = self.get("/__review__/recorded")
+        self.assertEqual(status, 200)
+        recorded = json.loads(raw)
+        self.assertGreaterEqual(recorded["count"], 1)
+        self.assertEqual(recorded["body"]["max_tokens"], [64])
+        self.assertEqual(self.get("/__review__/recorded", token="wrong")[0], 401)
+
+    def test_error_modes_carry_the_canary_upstream(self):
+        status, raw = self.post("/v1/chat/completions", self.error_body("parse-error"), "test-caller-token")
+        self.assertEqual(status, 200)
+        self.assertIn(b"canary-value", raw)
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(raw)
+        status, raw = self.post("/v1/chat/completions", self.error_body("upstream-error"), "test-caller-token")
+        self.assertEqual(status, 500)
+        self.assertIn(b"canary-value", raw)
+        connection = self.connection()
+        connection.request(
+            "POST", "/v1/chat/completions", json.dumps(self.error_body("redirect")).encode(),
+            {"Authorization": "Bearer test-caller-token"},
+        )
+        response = connection.getresponse()
+        self.assertEqual(response.status, 307)
+        self.assertIn("signature=canary-value", response.getheader("Location"))
+        response.read()
+        connection.close()
+        with patch.object(fake_backend, "TIMEOUT_SLEEP_S", 0.05):
+            with self.assertRaises((http.client.RemoteDisconnected, ConnectionResetError)):
+                self.post("/v1/chat/completions", self.error_body("timeout"), "test-caller-token")
+
+    def test_argument_shapes_reach_the_second_turn(self):
+        for name, arguments in fake_backend.ARGUMENT_SHAPES.items():
+            with self.subTest(name=name):
+                tool = {"type": "function", "function": {"name": name, "parameters": {"type": "object", "properties": {}}}}
+                body = {"model": fake_backend.MODEL, "messages": fake_backend.ARG_MESSAGES, "tools": [tool]}
+                status, raw = self.post("/v1/chat/completions", body, "test-caller-token")
+                self.assertEqual(status, 200)
+                call = json.loads(raw)["choices"][0]["message"]["tool_calls"][0]
+                self.assertEqual(call["function"]["arguments"], arguments)
+                replay = {
+                    **body,
+                    "messages": [
+                        *fake_backend.ARG_MESSAGES,
+                        {"role": "assistant", "content": None, "tool_calls": [call]},
+                        {"role": "tool", "tool_call_id": call["id"], "content": "ok"},
+                    ],
+                }
+                status, raw = self.post("/v1/chat/completions", replay, "test-caller-token")
+                self.assertEqual(json.loads(raw)["choices"][0]["message"]["content"], fake_backend.TEXT)
+
+    def probe_connection(self, host="inference-proxy", port=8080, timeout=20):
+        return self.connection()
+
+    def test_probe_collects_contract_and_normalization_facts(self):
+        with patch.object(probe, "connection", self.probe_connection):
+            contracts = [probe.contract_fact(scenario) for scenario in probe.RULE_4_SCENARIOS]
+            absent = probe.normalization_fact("absent")
+            wrong_type = probe.normalization_fact("wrong-type")
+            conflicting = probe.normalization_fact("conflicting-aliases")
+        self.assertEqual(rule_04.evaluate(contracts)["status"], "green")
+        self.assertTrue(absent["forwarded"] and absent["accepted"])
+        self.assertIsNone(absent["upstream_value"])
+        self.assertIs(rule_05.evaluate_one(absent), True)
+        self.assertEqual(wrong_type["upstream_value"], [64])
+        self.assertEqual(wrong_type["normalized"], probe.INVALID_VALUE)
+        self.assertIs(rule_05.evaluate_one(wrong_type), False)
+        self.assertTrue(conflicting["ambiguous_aliases"])
+        self.assertIs(rule_05.evaluate_one(conflicting), False)
+        self.assertNotIn("test-caller-token", json.dumps([contracts, absent, wrong_type, conflicting]))
+
+    def test_probe_collects_error_leak_and_stream_progress_facts(self):
+        with (
+            patch.object(probe, "connection", self.probe_connection),
+            patch.object(fake_backend, "SLOW_STREAM_GAP_S", 0.05),
+        ):
+            leak = probe.error_leak_fact("upstream-error")
+            shape = probe.stream_progress_fact("array-argument")
+            invalid = probe.stream_progress_fact("invalid-message")
+            cancelled = probe.stream_progress_fact("cancellation")
+            queued = probe.stream_progress_fact("queue-pressure")
+        canary = "review-canary-test-upstream-error"
+        self.assertEqual(leak, {"scenario": "upstream-error", "canaries": [canary], "client_error": canary})
+        self.assertIs(rule_07.evaluate_one({**leak, "captured_logs": ""}), False)
+        self.assertIs(rule_07.evaluate_one({**leak, "client_error": "http-500", "captured_logs": ""}), True)
+        self.assertEqual([event["kind"] for event in shape["events"]].count("done"), 2)
+        self.assertIs(rule_10.evaluate_one(shape), True)
+        self.assertEqual(invalid["events"][-1]["kind"], "error")
+        self.assertIs(rule_10.evaluate_one(invalid), True)
+        self.assertEqual(cancelled["events"][-1]["kind"], "closed")
+        self.assertIs(rule_10.evaluate_one(cancelled), True)
+        self.assertIs(rule_10.evaluate_one(queued), True)
 
     def test_search_request_contract_is_bounded(self):
         for body in (

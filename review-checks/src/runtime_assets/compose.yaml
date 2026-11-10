@@ -38,13 +38,14 @@ services:
       IRIS_ENDPOINT_SCHEME: http
       ROUTING_LIMITS: >-
         {"iris":{"*":{
-        "max_pinned_sessions":1,
+        "max_pinned_sessions":16,
         "max_global_in_flight_request_slots":2,
         "global_in_flight_request_slots_reserved_for_pinned_sessions":1,
         "max_per_session_in_flight_request_slots":1
         }}}
       CHAT_TIMEOUT_S: "45"
       READ_TIMEOUT_S: "60"
+      STREAM_CHAT_HEARTBEAT_INTERVAL_S: "1"
       LINKUP_API_KEY: ${LINKUP_API_KEY}
       SSL_CERT_FILE: /certificates/linkup.crt
     depends_on:

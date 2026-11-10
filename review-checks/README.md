@@ -1,6 +1,6 @@
 # Stack review
 
-`stack-review` runs the 17 advisory checks from Lyceum stack 4515 against one GitHub pull request. Without `--dev-vm`, it is a local, read-only replacement for the per-rule PR stack: it does not publish PR comments or descriptions, execute candidate code, or contribute to branch protection.
+`stack-review` runs the 17 advisory checks from Lyceum stack 4515 plus eight static security checks (18–25) derived from the 2026-10-30 security audit against one GitHub pull request. Without `--dev-vm`, it is a local, read-only replacement for the per-rule PR stack: it does not publish PR comments or descriptions, execute candidate code, or contribute to branch protection.
 
 ## Install
 
@@ -26,6 +26,25 @@ stack-review --repo /path/to/repository --repository owner/name 42
 Use `--json` for the complete report and `--cache-dir` to override the default cache. The terminal table explains each result and separates informative green/red verdicts from yellow results that are **not yet useful**. The CLI exits nonzero only for operational errors, not because a check is red.
 
 Checks 4–17 require runtime observations for changed code in their declared scope. Without complete candidate-, base-, and policy-bound observations they intentionally remain yellow. Supply trusted observations with `--observations observations.json`; files from the candidate cannot alter that binding. Inspect `stack_review` policy and each rule's required scenario names before collecting observations.
+
+## Security audit checks (18–25)
+
+Checks 18–25 are static, policy-driven snapshot checks like checks 1–3: they need no runtime observations and never execute candidate code. Their patterns, path scopes, and thresholds live in the trusted `security` section of `src/review_rules/policy.json`; candidate files cannot weaken them. They are diff-aware like check 2's reference rule: a check is red only when the candidate introduces or worsens a violation relative to the base snapshot. Violations already present in the base are listed in the JSON findings with kind `pre-existing` and stay green. Findings carry audit ids (`SEC-F01`, …), a path, and a line number; matched content is never echoed, so a detected key or credential does not leak into the report.
+
+Each check would have gone red on the pull request that introduced the corresponding audit finding. `tests/test_security_gates.py` proves this with audit-shaped fixtures at the real repository paths, clean counterparts, and pre-existing/worsened/fixed transitions. Coverage below is per finding of `security/security-audit-2026103.md` section 6; "partial" names the statically detectable slice only.
+
+| Check | Audit findings | Coverage |
+|---|---|---|
+| 18 Workload isolation and model-code trust | F01 privileged containers; F15 `--trust-remote-code`, containers without `RunAsNonRoot` | F01 full; F15 partial (egress, admission policy, and DGD-rendered pods are not static) |
+| 19 Secrets in source and logs | F02 embedded private keys, decrypted-credential logging; F20 whole job/request object logging | F02 full for source-embedded keys and the audited log shapes; F20 partial (CI log artifacts and SQL data-access auditing excluded) |
+| 20 Storage version and session lifetime | F03 MinIO pinned before the 2025-10-15 session-policy fix; F04 `MaxValiditySeconds` above 900, API-key lookup without `expires_at` | Static slice; session values computed at runtime from token expiry are not resolved |
+| 21 CI federation and standing privilege | F05 org-wide `repository_owner` WIF binding; F12 standing `roles/owner`; F22 mutable `@main` actions, stale-review settings off | F12 partial (SOPS recipient breadth and CI key custody are process controls) |
+| 22 Network exposure and plaintext transport | F06 public firewall rules for SSH/Consul ports, all-ports tailnet VPC grants; F09 HTTPS upstreams without `proxy_ssl_verify on`; F13 plaintext `redis://`/`amqp://`/internal `http://` endpoints | Declared rules only; inherited and provider-side rules are not visible statically |
+| 23 Service identity, mesh and endpoint auth | F07 shared wildcard Iris leaf, CA/leaf lifetimes above policy maxima; F08 Dynamo builder without endpoint-auth; F10 Consul bound to all interfaces without ACL/TLS verification declarations | F08 static slice (a builder that gains auth must still be runtime-tested per the audit) |
+| 24 SSH bootstrap and VM handover | F11 disabled SSH host-key verification; F24 non-exclusive customer `authorized_key` handover | F24 partial (provider/hypervisor access is not a guest-file property) |
+| 25 Platform hardening and lifecycle declarations | F14 k3s without `secrets-encryption`; F17 raw filesystems without a LUKS declaration; F18 unattended upgrades disabled; F19 `:latest`/undigested image references; F21 Cloud SQL instances without backups/PITR | Partial: absence guards and removal regressions; patch execution, restore drills, and fleet state are runtime evidence |
+
+Findings F16 and F23 have no static signal — per-site firmware/BMC/physical evidence and measured tenant placement cannot be read from repository declarations — so no check claims them; they remain evidence-capture workstreams in the audit plan. A green 18–25 row therefore means "this PR introduced no new declared violation", not "the finding is remediated": closure still needs the runtime and operational evidence the audit requires.
 
 ## Develop Lyceum in Docker
 
@@ -62,7 +81,11 @@ The development checks share the runtime host's Docker socket and network for te
 
 The runtime probe exercises all four rule-9 chat scenarios: `plain`, `tools`, `search`, and `stop-string`. Each compares a non-streaming completion with a streamed completion through the candidate proxy to a deterministic fake OpenAI-compatible backend. Comparisons cover text, tool-call IDs and arguments, citation annotations, model identity, usage, finish reason, and normal SSE termination. Scenarios fail independently; an unsupported or malformed response is inconclusive, while a genuine complete/stream mismatch is red.
 
-Hosted search uses `web_search_options`, the proxy's internal search function, and an authenticated Linkup-compatible fixture. A per-run self-signed certificate maps `api.linkup.so` to that fixture on the internal-only network, with only its public certificate mounted read-only into the candidate. The search credential is synthetic and deleted with the run. No internet search, real model, or external provider is used. Successful rule-9 evidence is not a claim that the whole stack, production inference, or unrelated Execlet credential changes have passed.
+The same probe run also collects candidate-bound facts for rules 4, 5, 7, and 10, which otherwise stay yellow. Rule 4 checks response status and fields against fixed contract fixtures for the SDK chat surface, public model routing, and the tool-call response schema. Rule 5 varies `max_tokens` (absent, null, empty, wrong type, zero, negative, and conflicting `max_completion_tokens` alias); the fixture records the exact body the candidate forwards upstream, so rejection-before-forwarding and the forwarded canonical value are both observed, not inferred. Rule 10 records per-turn stream event kinds and arrival times for string, array, and object tool arguments across two turns, plus client cancellation, a malformed upstream stream, and queue pressure against the bounded routing limits. The candidate runs with a one-second stream heartbeat and the probe applies a three-second idle limit: the same three-times ratio as production's ten-second heartbeat and the rule's thirty-second limit, scaled down so slow-stream scenarios take seconds.
+
+Rule 7 sends a per-run synthetic canary through four upstream failure modes the fixture can produce on demand: malformed JSON, an upstream timeout, a redirect whose target carries the canary, and an upstream 500 echoing it. The probe reports only whether the canary reached the client error. The host agent separately searches the candidate container's bounded log tail for each scenario canary and records only the search result; log content itself never leaves the runtime host. The timeout scenario waits out the candidate's configured chat timeout, so a probe run takes roughly a minute longer than the remaining scenarios combined.
+
+Hosted search uses `web_search_options`, the proxy's internal search function, and an authenticated Linkup-compatible fixture. A per-run self-signed certificate maps `api.linkup.so` to that fixture on the internal-only network, with only its public certificate mounted read-only into the candidate. The search credential is synthetic and deleted with the run. No internet search, real model, or external provider is used. Successful probe evidence covers only the candidate inference proxy's behavior against these fixtures. It is not a claim that the whole stack, production inference, other services, or unrelated Execlet credential changes have passed. Rules 6, 8, and 11–17 still receive no runtime observations from this harness and remain yellow on scoped changes; rule 8 belongs with the `--dev-tests` container rather than the probe.
 
 No public ports are published, real credentials are used, or production/shared-development services contacted. Missing or inconclusive evidence stays yellow.
 

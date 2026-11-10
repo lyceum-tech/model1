@@ -1,0 +1,26 @@
+hide footbox
+autonumber
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam defaultFontSize 13
+skinparam sequenceMessageAlign left
+skinparam maxMessageSize 320
+skinparam ParticipantPadding 15
+skinparam BoxPadding 8
+skinparam sequence {
+  LifeLineBorderColor #94A3B8
+  ParticipantBackgroundColor #EFF6FF
+  ParticipantBorderColor #475569
+  ActorBorderColor #475569
+  GroupBackgroundColor #F8FAFC
+  NoteBackgroundColor #FFFBEA
+  NoteBorderColor #D4A000
+}
+legend bottom left
+  <color:#16803C><b>GREEN [ENC]</b></color>  Encryption established for the named boundary; not a claim of complete security.
+  <color:#DC2626><b>RED [PLAIN]</b></color>  Confirmed plaintext protocol or application-visible data; local vs network is labelled.
+  <color:#D4A000><b>YELLOW [CHECK]</b></color>  Encryption with weak trust/authentication, or protection not established.
+  Yellow takes precedence over green when a material weakness applies. Unknown does not mean unencrypted.
+  Storage arrows describe persistence; memory arrows describe processing, not additional network requests.
+endlegend

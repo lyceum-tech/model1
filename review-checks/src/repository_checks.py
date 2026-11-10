@@ -2,6 +2,7 @@
 
 import ast
 import hashlib
+from collections import Counter
 import json
 import re
 import shlex
@@ -305,5 +306,200 @@ def validation_coverage_check(candidate: Snapshot, observations=None) -> dict:
             else "passed"
         ),
         "reason": reason,
+        "findings": findings,
+    }
+
+
+SECURITY_CHECKS = (
+    "workload-isolation",
+    "secrets-in-source-and-logs",
+    "storage-version-and-sessions",
+    "ci-federation-and-standing-privilege",
+    "network-exposure-and-plaintext-transport",
+    "service-identity-mesh-and-endpoint-auth",
+    "ssh-bootstrap-and-vm-handover",
+    "platform-hardening-and-lifecycle",
+)
+
+_SECURITY_EXCLUDES = (
+    "**/*_test.go",
+    "**/test_*.py",
+    "**/tests/**",
+    "**/testdata/**",
+    "**/examples/**",
+    "**/.ansible/**",
+    "docs/**",
+    "**/*.md",
+)
+
+
+def _glob_regex(pattern: str) -> re.Pattern:
+    """Translate the policy glob dialect (`**`, `*`, `?`) into a full-match regex."""
+    out = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**/", index):
+            out.append("(?:.*/)?")
+            index += 3
+        elif pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            out.append("[^/]*")
+            index += 1
+        elif pattern[index] == "?":
+            out.append("[^/]")
+            index += 1
+        else:
+            out.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("".join(out))
+
+
+def _security_files(snapshot: Snapshot, spec: dict) -> list[str]:
+    includes = [_glob_regex(p) for p in spec["paths"]]
+    excludes = [_glob_regex(p) for p in (*_SECURITY_EXCLUDES, *spec.get("exclude", ()))]
+    return sorted(
+        path
+        for path in snapshot.paths
+        if any(rx.fullmatch(path) for rx in includes) and not any(rx.fullmatch(path) for rx in excludes)
+    )
+
+
+def _code_lines(text: str):
+    """Yield (line_number, line) skipping whole-line comments, which cannot execute."""
+    for number, line in enumerate(text.splitlines(), 1):
+        if line.strip().startswith(("#", "//", "*")):
+            continue
+        yield number, line
+
+
+def _blocks(lines: list[str], start: re.Pattern):
+    """Yield (header_line_number, header, block_lines) for brace-delimited blocks."""
+    index = 0
+    while index < len(lines):
+        if not start.search(lines[index]):
+            index += 1
+            continue
+        block = []
+        depth = 0
+        started = False
+        cursor = index
+        while cursor < len(lines):
+            block.append(lines[cursor])
+            depth += lines[cursor].count("{") - lines[cursor].count("}")
+            started = started or "{" in lines[cursor]
+            cursor += 1
+            if started and depth <= 0:
+                break
+        yield index + 1, lines[index], block
+        index = cursor
+
+
+def _resolve_int(token: str, text: str):
+    """Resolve an integer literal or a same-file constant assignment; else None."""
+    if token.isdigit():
+        return int(token)
+    match = re.search(rf"(?m)^\s*(?:const\s+)?{re.escape(token)}\s*=\s*(\d+)\b", text)
+    return int(match[1]) if match else None
+
+
+def _violations(snapshot: Snapshot, spec: dict, read) -> list[dict]:
+    """Collect violations of one policy finding spec in one snapshot.
+
+    Each violation carries an identity used only for base/head comparison.
+    Matched line content never leaves this function.
+    """
+    finding = spec["finding"]
+    kind = spec["kind"]
+    patterns = [re.compile(p) for p in spec.get("patterns", ())]
+    required = [re.compile(p, re.MULTILINE) for p in spec.get("required", ())]
+    result = []
+
+    def add(path, line, identity):
+        result.append({"path": path, "line": line, "identity": (finding, path, identity)})
+
+    for path in _security_files(snapshot, spec):
+        text = read(snapshot, path)
+        if text is None:
+            continue
+        if kind in ("block_combo", "block_required"):
+            start = re.compile(spec["block_start"])
+            for number, header, block in _blocks(text.splitlines(), start):
+                body = "\n".join(line for _, line in _code_lines("\n".join(block)))
+                combo_hit = all(rx.search(body) for rx in patterns)
+                missing = [rx for rx in required if not rx.search(body)]
+                if (kind == "block_combo" and combo_hit) or (kind == "block_required" and missing):
+                    add(path, number, " ".join(header.split()))
+            continue
+        if kind == "forbidden_unless" and all(rx.search(text) for rx in required):
+            continue
+        for number, line in _code_lines(text):
+            for rx in patterns:
+                match = rx.search(line)
+                if not match:
+                    continue
+                if kind in ("forbidden", "forbidden_unless"):
+                    add(path, number, " ".join(line.split()))
+                elif kind == "version_floor":
+                    if match[1] < spec["floor"]:
+                        add(path, number, match[1])
+                elif kind == "max_literal":
+                    value = _resolve_int(match[1], text)
+                    if value is not None and value > spec["max"]:
+                        add(path, number, " ".join(line.split()))
+                break
+    return result
+
+
+def security_check(before: Snapshot, candidate: Snapshot, check_id: str) -> dict:
+    """Fail only on audit-policy violations the candidate introduces or worsens.
+
+    Pre-existing violations are listed as findings with kind "pre-existing"
+    but do not fail the check, mirroring the new-references-only rule REF-1.
+    """
+    spec = next((c for c in policy().get("security", []) if c.get("id") == check_id), None)
+    if spec is None:
+        return {
+            "id": check_id,
+            "status": "incomplete",
+            "reason": "Security check is not declared in the trusted policy",
+            "findings": [],
+        }
+    cache: dict[tuple[str, str], str | None] = {}
+
+    def read(snapshot: Snapshot, path: str):
+        key = (snapshot.revision, path)
+        if key not in cache:
+            try:
+                cache[key] = snapshot.read(path)
+            except (ValueError, UnicodeDecodeError):
+                cache[key] = None
+        return cache[key]
+
+    unreadable = False
+    base: list[dict] = []
+    head: list[dict] = []
+    for finding_spec in spec["findings"]:
+        base.extend(_violations(before, finding_spec, read))
+        head.extend(_violations(candidate, finding_spec, read))
+    unreadable = any(value is None for value in cache.values())
+    remaining = Counter(v["identity"] for v in base)
+    findings = []
+    for violation in head:
+        identity = violation["identity"]
+        if remaining[identity] > 0:
+            remaining[identity] -= 1
+            kind = "pre-existing"
+        else:
+            kind = "introduced-or-worsened"
+        findings.append(
+            {"rule": f"SEC-{identity[0]}", "path": violation["path"], "line": violation["line"], "kind": kind}
+        )
+    introduced = any(f["kind"] == "introduced-or-worsened" for f in findings)
+    return {
+        "id": check_id,
+        "status": "failed" if introduced else "incomplete" if unreadable else "passed",
+        "reason": "Declared security patterns from the audit policy checked; only introduced or worsened findings fail",
         "findings": findings,
     }

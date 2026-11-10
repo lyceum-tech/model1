@@ -1,0 +1,54 @@
+@startuml
+!include style.iuml
+title Customer journey 1: inference request and streamed response
+actor Customer as C
+boundary "Public NGINX\nAPI edge" as E
+boundary "GCP HTTPS ingress\nCloud Run boundary" as L
+participant "InferenceProxy\napplication" as P
+participant "Identity / org services\nSupabase / controller" as A
+database "Redis\nauth / route / cache" as R
+participant "Kubernetes Service / routing\nVPN where applicable" as N
+participant "vLLM or Dynamo\nmodel endpoint" as M
+participant "CPU / GPU\nRAM, VRAM, KV cache" as G
+participant "External inference\nprovider (conditional)" as X
+
+C -[#16803C]> E : [ENC] HTTPS: API key + prompt / attachments
+E -[#D4A000]> L : [CHECK] HTTPS upstream; server certificate\nverification not enabled in reviewed NGINX config (F09)
+L -[#DC2626]> P : [PLAIN] Managed container boundary: h2c\nTLS already terminated; not an Internet plaintext hop
+group Authenticate and authorize before dispatch (logical dependencies)
+P -[#D4A000]> A : [CHECK] Resolve caller / organization / entitlement\nExact cache-hit and identity-service path varies
+note over P,A
+API key / JWT authentication is separate from encryption.
+This group is a dependency view, not a claim that every
+request makes every identity-service call.
+end note
+P -[#DC2626]> R : [PLAIN] redis:// with password; private networking\nAuth/routing/cache operations as needed
+R -[#16803C]> R : [ENC] GCP storage-layer encryption for persistence\nNo per-tenant key boundary established
+end
+alt Request served by an internal deployment
+P -[#D4A000]> N : [CHECK] HTTPS + private CA, deployment bearer token\nShared long-lived wildcard identity (F07)
+N -[#D4A000]> M : [CHECK] Forward TLS ciphertext to model endpoint\nRouter / Service does not terminate application TLS
+note over N,M
+Tailscale adds WireGuard only on routes using its peers.
+vLLM enforces the deployment token; Dynamo omits it (F08).
+Dynamo frontend HTTPS exists; internal graph/event links
+need separate authentication/encryption evidence.
+end note
+M -[#DC2626]> M : [PLAIN] Endpoint decrypts prompt into application memory
+M -[#D4A000]> G : [CHECK] Tokenization / tensors / KV cache / generation\nCPU-GPU link and RAM/VRAM protection not attested
+G -[#D4A000]> M : [CHECK] Generated tokens; hardware isolation unknown
+M -[#D4A000]> P : [CHECK] Stream over same HTTPS session / routing\nShared TLS identity caveat remains
+else Organization policy permits external offload
+P -[#16803C]> X : [ENC] HTTPS: prompt + provider credential
+X -[#D4A000]> X : [CHECK] Provider processing, storage and retention\nSite, memory protection and key custody not established
+X -[#16803C]> P : [ENC] HTTPS response stream
+end
+P -[#DC2626]> L : [PLAIN] Response at local managed h2c boundary
+L -[#D4A000]> E : [CHECK] Response on upstream TLS connection (F09)
+E -[#16803C]> C : [ENC] HTTPS: streamed answer
+note over P,G
+Processes necessarily see plaintext. Host/admin access is not
+excluded by TLS. This diagram does not claim every prompt
+is stored in Redis or queued through RabbitMQ.
+end note
+@enduml

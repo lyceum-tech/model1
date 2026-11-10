@@ -18,7 +18,8 @@ from review_report import policy_digest
 REPOSITORY = "lyceum-tech/lyceum"
 REPOSITORY_URL = f"https://github.com/{REPOSITORY}.git"
 ASSETS = Path(__file__).parent / "runtime_assets"
-MAX_PROBE_BYTES = 16 * 1024
+MAX_PROBE_BYTES = 128 * 1024
+MAX_LOG_BYTES = 1024 * 1024
 COMMIT = re.compile(r"[0-9a-f]{40}")
 DEV_RUNNER = ASSETS / "lyceum_dev" / "dev"
 DEV_CHECKS = (("pre-commit", "pre-commit"), ("lint", "lint"), ("test-fast", "test"), ("integration", "integration"))
@@ -160,7 +161,98 @@ def verify_image(compose, head):
         raise RuntimeError("Candidate image is not bound to the pull request head")
 
 
-def comparison_fact(project, env, timeout=600):
+PROBE_SCENARIOS = {
+    "4": ("sdk", "public-routing", "response-schema"),
+    "5": ("absent", "null", "empty", "wrong-type", "zero", "negative", "conflicting-aliases"),
+    "7": ("parse-error", "timeout", "redirect", "upstream-error"),
+    "9": ("plain", "tools", "search", "stop-string"),
+    "10": (
+        "string-argument",
+        "array-argument",
+        "object-argument",
+        "cancellation",
+        "invalid-message",
+        "queue-pressure",
+    ),
+}
+
+
+def _is_int(value):
+    return type(value) is int
+
+
+def _valid_fact(rule, fact):
+    if rule == "9":
+        comparisons = fact.get("comparisons")
+        return (
+            set(fact) == {"scenario", "comparisons"}
+            and isinstance(comparisons, dict)
+            and set(comparisons) == {"text", "model", "usage", "finish_reason"}
+            and all(type(value) is bool for value in comparisons.values())
+        )
+    if rule == "4":
+        fields = (fact.get("required_fields"), fact.get("response_fields"))
+        return (
+            set(fact) == {"scenario", "actual_status", "contract_status", "required_fields", "response_fields"}
+            and all(_is_int(fact[key]) and 100 <= fact[key] <= 599 for key in ("actual_status", "contract_status"))
+            and all(
+                isinstance(values, list) and len(values) <= 64 and all(
+                    isinstance(value, str) and len(value) <= 128 for value in values
+                )
+                for values in fields
+            )
+        )
+    if rule == "5":
+        scalar = (type(None), str, int, float, bool, list, dict)
+        return (
+            set(fact)
+            == {
+                "scenario", "forwarded", "accepted", "status",
+                "normalized", "validated", "upstream_value", "ambiguous_aliases",
+            }
+            and all(type(fact[key]) is bool for key in ("forwarded", "accepted", "ambiguous_aliases"))
+            and _is_int(fact["status"]) and 100 <= fact["status"] <= 599
+            and all(isinstance(fact[key], scalar) for key in ("normalized", "validated", "upstream_value"))
+        )
+    if rule == "7":
+        canaries = fact.get("canaries")
+        return (
+            set(fact) == {"scenario", "canaries", "client_error"}
+            and isinstance(canaries, list) and len(canaries) == 1
+            and isinstance(canaries[0], str) and len(canaries[0]) <= 256
+            and isinstance(fact["client_error"], str) and len(fact["client_error"]) <= 256
+        )
+    if rule == "10":
+        events = fact.get("events")
+        return (
+            set(fact) == {"scenario", "events", "idle_limit_ms"}
+            and _is_int(fact["idle_limit_ms"]) and fact["idle_limit_ms"] > 0
+            and isinstance(events, list) and 0 < len(events) <= 512
+            and all(
+                isinstance(event, dict)
+                and set(event) == {"turn", "kind", "time_ms"}
+                and _is_int(event["turn"]) and 1 <= event["turn"] <= 4
+                and event["kind"] in ("content", "heartbeat", "done", "error", "closed")
+                and _is_int(event["time_ms"]) and event["time_ms"] >= 0
+                for event in events
+            )
+        )
+    return False
+
+
+def _valid_rule_facts(rule, facts):
+    scenarios = PROBE_SCENARIOS[rule]
+    if not isinstance(facts, list) or len(facts) != len(scenarios):
+        return False
+    if [fact.get("scenario") for fact in facts if isinstance(fact, dict)] != list(scenarios):
+        return False
+    return all(
+        _valid_fact(rule, fact) or fact == {"scenario": fact["scenario"], "error": "response-contract-inconclusive"}
+        for fact in facts
+    )
+
+
+def probe_facts(project, env, timeout=1200):
     output = checked(
         [
             "docker",
@@ -184,22 +276,51 @@ def comparison_fact(project, env, timeout=600):
     if len(output.encode()) > MAX_PROBE_BYTES:
         raise RuntimeError("Candidate probe exceeded its output budget")
     facts = json.loads(output)
-    scenarios = ("plain", "tools", "search", "stop-string")
-    if not isinstance(facts, list) or len(facts) != len(scenarios):
-        raise RuntimeError("Candidate probe returned missing or duplicate scenarios")
-    if [fact.get("scenario") for fact in facts if isinstance(fact, dict)] != list(scenarios):
-        raise RuntimeError("Candidate probe returned unexpected scenarios")
-    for fact in facts:
-        if set(fact) == {"scenario", "comparisons"}:
-            if not isinstance(fact["comparisons"], dict) or set(fact["comparisons"]) != {
-                "text", "model", "usage", "finish_reason"
-            }:
-                raise RuntimeError("Candidate probe returned unexpected fields")
-            if not all(type(value) is bool for value in fact["comparisons"].values()):
-                raise RuntimeError("Candidate probe returned invalid comparisons")
-        elif fact != {"scenario": fact["scenario"], "error": "response-contract-inconclusive"}:
-            raise RuntimeError("Candidate probe returned malformed evidence")
+    if not isinstance(facts, dict) or set(facts) != set(PROBE_SCENARIOS):
+        raise RuntimeError("Candidate probe returned unexpected rules")
+    if not all(_valid_rule_facts(rule, facts[rule]) for rule in PROBE_SCENARIOS):
+        raise RuntimeError("Candidate probe returned malformed evidence")
     return facts
+
+
+def comparison_fact(project, env, timeout=1200):
+    """Backward-compatible name: the probe now serves every probe rule."""
+    return probe_facts(project, env, timeout)
+
+
+def candidate_logs(project, env):
+    """Bounded candidate log tail for canary search; never forwarded as evidence."""
+    try:
+        output = checked(
+            [
+                "docker", "compose", "--project-name", project, "--file", str(ASSETS / "compose.yaml"),
+                "logs", "--no-color", "--tail", "2000", "inference-proxy",
+            ],
+            env=env,
+            timeout=60,
+            capture=True,
+            stage="docker compose logs",
+        )
+    except (RuntimeError, subprocess.SubprocessError, OSError):
+        return None
+    return output[-MAX_LOG_BYTES:]
+
+
+def enrich_log_facts(facts, logs, canary_prefix):
+    """Complete rule 7 facts with the derived captured-logs search result."""
+    enriched = []
+    for fact in facts:
+        if "error" in fact:
+            enriched.append(fact)
+            continue
+        canary = fact["canaries"][0]
+        if canary != f"{canary_prefix}-{fact['scenario']}":
+            raise RuntimeError("Candidate probe returned an unbound canary")
+        if logs is None:
+            enriched.append({"scenario": fact["scenario"], "error": "response-contract-inconclusive"})
+            continue
+        enriched.append({**fact, "captured_logs": canary if canary in logs else ""})
+    return enriched
 
 
 def development_check_facts(source, env):
@@ -258,6 +379,7 @@ def collect(base, head, home=None, *, dev_tests=False):
                 "SUPABASE_KEY": secrets.token_urlsafe(40),
                 "LINKUP_API_KEY": secrets.token_urlsafe(40),
                 "REDIS_PASSWORD": secrets.token_urlsafe(40),
+                "REVIEW_CANARY": "review-canary-" + secrets.token_hex(8),
                 "DEPLOYMENT_ID": "runtime-fake-dep",
             }
             descriptor = os.open(runtime_env, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -279,10 +401,11 @@ def collect(base, head, home=None, *, dev_tests=False):
                 compose.execute("build", "--pull", "fixture", "inference-proxy", timeout=1500)
                 verify_image(compose, head)
                 compose.execute("up", "--detach", "--wait", "--wait-timeout", "90", timeout=150)
-                facts = comparison_fact(project, env)
+                facts = probe_facts(project, env)
+                facts["7"] = enrich_log_facts(facts["7"], candidate_logs(project, env), tokens["REVIEW_CANARY"])
             finally:
                 compose.cleanup()
-            rules = {"9": facts}
+            rules = facts
             if dev_tests:
                 rules["3"] = development_check_facts(source, env)
             return {

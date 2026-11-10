@@ -24,10 +24,10 @@ class ReportTest(unittest.TestCase):
     def test_fixed_rows_expose_unknown_checks_as_not_yet_useful(self):
         markdown = report.render({"base": "a" * 40, "head": "b" * 40, "policy_sha256": "c" * 64, "rules": []})
         rows = [line for line in markdown.splitlines() if line.startswith("|")]
-        self.assertEqual(len(rows), 19)
+        self.assertEqual(len(rows), 27)
         self.assertTrue(all(len(line.split("|")) == 7 for line in rows))
-        self.assertEqual(markdown.count("YELLOW"), 17)
-        self.assertEqual(markdown.count("not yet"), 17)
+        self.assertEqual(markdown.count("YELLOW"), 25)
+        self.assertEqual(markdown.count("not yet"), 25)
 
     def test_red_finding_count_survives_reason_truncation(self):
         cells = report._cells({"number": 3, "reason": "x" * 100, "status": "red", "findings": [{"kind": "failure"}]})

@@ -55,10 +55,10 @@ class CommandTest(GitFixture):
         self.assertEqual(cache.call_args.args[0], "lyceum-tech/lyceum")
         return output.getvalue()
 
-    def test_exact_command_renders_all_seventeen_rows_with_explicit_partial_evidence(self):
+    def test_exact_command_renders_all_rows_with_explicit_partial_evidence(self):
         output = self.evaluate()
-        self.assertEqual(len([line for line in output.splitlines() if line.startswith("|")]), 19)
-        self.assertIn("17 checks:", output)
+        self.assertEqual(len([line for line in output.splitlines() if line.startswith("|")]), 27)
+        self.assertIn("25 checks:", output)
         self.assertIn("plain passed", output)
         self.assertIn(self.head, output)
 
@@ -66,7 +66,7 @@ class CommandTest(GitFixture):
         result = json.loads(self.evaluate(json_mode=True))
         self.assertEqual(result["head"], self.head)
         self.assertEqual(result["policy_sha256"], review_report.policy_digest())
-        self.assertEqual(len(result["rules"]), 17)
+        self.assertEqual(len(result["rules"]), 25)
         self.assertEqual(result["rules"][8]["status"], "yellow")
         self.assertIn("missing scenarios", result["rules"][8]["reason"])
 
